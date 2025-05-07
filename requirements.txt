@@ -6,3 +6,4 @@ alembic>=1.7.1
 python-multipart>=0.0.5
 requests>=2.26.0
 beautifulsoup4
+psycopg2-binary
