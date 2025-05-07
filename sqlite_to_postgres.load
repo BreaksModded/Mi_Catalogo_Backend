@@ -1,0 +1,8 @@
+LOAD DATABASE
+     FROM sqlite:///data/media.db
+     INTO postgresql://media_0t7l_user:DAOS1Key0XhoQAd8G2DUcnWYjk4A0TF9@dpg-d0dku715pdvs739a5520-a.frankfurt-postgres.render.com:5432/media_0t7l?sslmode=require
+     WITH include no drop, create tables, create indexes, reset sequences
+     SET work_mem to '16MB', maintenance_work_mem to '512MB'
+     BEFORE LOAD DO
+         $$ SET client_encoding = 'UTF8'; $$,
+         $$ SET standard_conforming_strings = on; $$;
