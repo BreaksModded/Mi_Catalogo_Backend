@@ -17,9 +17,16 @@ from bs4 import BeautifulSoup
 
 app = FastAPI()
 
+from fastapi.middleware.cors import CORSMiddleware
+
+origins = [
+    "https://mi-catalogo-oguv.vercel.app",
+    "http://localhost:3000",  # para desarrollo local, si lo usas
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
