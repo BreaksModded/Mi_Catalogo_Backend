@@ -73,17 +73,24 @@ def startup():
     database.init_db()
 
 @app.get("/medias", response_model=list[schemas.Media])
-def read_medias(skip: int = 0, limit: int = 5000, pendiente: bool = None, order_by: str = None, tipo: str = None, db: Session = Depends(get_db)):
-    print(f"Debug - Parámetros recibidos: skip={skip}, limit={limit}, tipo={tipo}")  # Log para diagnóstico
-    if pendiente is not None:
-        if pendiente:
-            result = crud.get_pendientes(db)[skip:skip+limit]
-            print(f"Debug - Número de pendientes devueltos: {len(result)}")
-            return result
-        else:
-            return crud.get_medias(db, skip=skip, limit=limit, tipo=tipo, pendiente=False)
-    result = crud.get_medias(db, skip=skip, limit=limit, order_by=order_by, tipo=tipo)
-    print(f"Debug - Número de medios devueltos: {len(result)}")
+def read_medias(
+    skip: int = 0,
+    limit: int = 24,
+    pendiente: bool = None,
+    order_by: str = None,
+    tipo: str = None,
+    genero: str = None,
+    min_year: int = None,
+    max_year: int = None,
+    min_nota: float = None,
+    min_nota_personal: float = None,
+    db: Session = Depends(get_db)
+):
+    result = crud.get_medias(
+        db, skip=skip, limit=limit, order_by=order_by, tipo=tipo, pendiente=pendiente,
+        genero=genero, min_year=min_year, max_year=max_year,
+        min_nota=min_nota, min_nota_personal=min_nota_personal
+    )
     return result
 
 @app.get("/medias/{media_id}", response_model=schemas.Media)

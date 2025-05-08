@@ -2,20 +2,26 @@ import models
 import schemas
 from sqlalchemy.orm import Session
 
-def get_medias(db: Session, skip: int = 0, limit: int = 5000, order_by: str = None, tipo: str = None, pendiente: bool = None):
+def get_medias(db: Session, skip: int = 0, limit: int = 5000, order_by: str = None, tipo: str = None, pendiente: bool = None,
+               genero: str = None, min_year: int = None, max_year: int = None, min_nota: float = None, min_nota_personal: float = None):
     query = db.query(models.Media)
-    
     # Aplicar filtros
     if tipo:
-        query = query.filter(models.Media.tipo.ilike(tipo))  # Usar ilike para case-insensitive
+        query = query.filter(models.Media.tipo.ilike(tipo))
     if pendiente is not None:
         query = query.filter(models.Media.pendiente == pendiente)
-        
-    # Aplicar ordenación
+    if genero:
+        query = query.filter(models.Media.genero.ilike(f"%{genero}%"))
+    if min_year:
+        query = query.filter(models.Media.anio >= min_year)
+    if max_year:
+        query = query.filter(models.Media.anio <= max_year)
+    if min_nota:
+        query = query.filter(models.Media.nota_imdb >= min_nota)
+    if min_nota_personal:
+        query = query.filter(models.Media.nota_personal >= min_nota_personal)
     if order_by == "fecha_creacion":
         query = query.order_by(models.Media.fecha_creacion.desc())
-        
-    # Aplicar paginación
     return query.offset(skip).limit(limit).all()
 
 def get_media(db: Session, media_id: int):
