@@ -4,6 +4,7 @@ import crud
 import schemas
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, Body, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import requests
@@ -16,6 +17,9 @@ import unicodedata
 from bs4 import BeautifulSoup
 
 app = FastAPI()
+
+# Activar compresión GZIP para todas las respuestas
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 origins = [
     "https://mi-catalogo-oguv.vercel.app",
@@ -136,12 +140,12 @@ def update_anotacion_personal(media_id: int, anotacion_personal: str = Body(...)
     return db_media
 
 @app.get("/pendientes", response_model=list[schemas.Media])
-def read_pendientes(db: Session = Depends(get_db)):
-    return crud.get_pendientes(db)
+def read_pendientes(skip: int = 0, limit: int = 24, db: Session = Depends(get_db)):
+    return crud.get_pendientes(db, skip=skip, limit=limit)
 
 @app.get("/favoritos", response_model=list[schemas.Media])
-def read_favoritos(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return crud.get_favoritos(db)[skip:skip+limit]
+def read_favoritos(skip: int = 0, limit: int = 24, db: Session = Depends(get_db)):
+    return crud.get_favoritos(db, skip=skip, limit=limit)
 
 @app.get("/tags", response_model=List[schemas.Tag])
 def get_tags(db: Session = Depends(get_db)):

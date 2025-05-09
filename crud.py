@@ -84,11 +84,11 @@ def update_media_anotacion_personal(db: Session, media_id: int, anotacion_person
         db.refresh(db_media)
     return db_media
 
-def get_pendientes(db: Session):
-    return db.query(models.Media).filter(models.Media.pendiente == True).all()
+def get_pendientes(db: Session, skip: int = 0, limit: int = 24):
+    return db.query(models.Media).filter(models.Media.pendiente == True).offset(skip).limit(limit).all()
 
-def get_favoritos(db: Session):
-    return db.query(models.Media).filter(models.Media.favorito == True).all()
+def get_favoritos(db: Session, skip: int = 0, limit: int = 24):
+    return db.query(models.Media).filter(models.Media.favorito == True).offset(skip).limit(limit).all()
 
 # CRUD para tags
 
