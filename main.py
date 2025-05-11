@@ -81,6 +81,8 @@ def read_medias(
     skip: int = 0,
     limit: int = 24,
     pendiente: bool = None,
+    favorito: bool = None,
+    tag_id: int = None,
     order_by: str = None,
     tipo: str = None,
     genero: str = None,
@@ -93,7 +95,8 @@ def read_medias(
     result = crud.get_medias(
         db, skip=skip, limit=limit, order_by=order_by, tipo=tipo, pendiente=pendiente,
         genero=genero, min_year=min_year, max_year=max_year,
-        min_nota=min_nota, min_nota_personal=min_nota_personal
+        min_nota=min_nota, min_nota_personal=min_nota_personal,
+        favorito=favorito, tag_id=tag_id
     )
     return result
 

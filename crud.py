@@ -3,13 +3,16 @@ import schemas
 from sqlalchemy.orm import Session
 
 def get_medias(db: Session, skip: int = 0, limit: int = 5000, order_by: str = None, tipo: str = None, pendiente: bool = None,
-               genero: str = None, min_year: int = None, max_year: int = None, min_nota: float = None, min_nota_personal: float = None):
+               genero: str = None, min_year: int = None, max_year: int = None, min_nota: float = None, min_nota_personal: float = None,
+               favorito: bool = None, tag_id: int = None):
     query = db.query(models.Media)
     # Aplicar filtros
     if tipo:
         query = query.filter(models.Media.tipo.ilike(tipo))
     if pendiente is not None:
         query = query.filter(models.Media.pendiente == pendiente)
+    if favorito is not None:
+        query = query.filter(models.Media.favorito == favorito)
     if genero:
         query = query.filter(models.Media.genero.ilike(f"%{genero}%"))
     if min_year:
@@ -20,8 +23,15 @@ def get_medias(db: Session, skip: int = 0, limit: int = 5000, order_by: str = No
         query = query.filter(models.Media.nota_imdb >= min_nota)
     if min_nota_personal:
         query = query.filter(models.Media.nota_personal >= min_nota_personal)
-    if order_by == "fecha_creacion":
+    if tag_id is not None:
+        query = query.join(models.Media.tags).filter(models.Tag.id == tag_id)
+    # Ordenamiento según el filtro recibido
+    if order_by == "fecha" or order_by is None or order_by == "fecha_creacion":
         query = query.order_by(models.Media.fecha_creacion.desc())
+    elif order_by == "nota_personal":
+        query = query.order_by(models.Media.nota_personal.desc().nullslast())
+    elif order_by == "nota_tmdb":
+        query = query.order_by(models.Media.nota_imdb.desc().nullslast())
     return query.offset(skip).limit(limit).all()
 
 def get_media(db: Session, media_id: int):
