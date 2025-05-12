@@ -57,20 +57,25 @@ def get_db():
 
 @app.get("/search", response_model=List[schemas.Media])
 def search_medias(q: str = Query(..., description="Búsqueda por título, actor o director"), db: Session = Depends(get_db)):
+    import unicodedata
     def normalize_str(s):
         return ''.join(
             c for c in unicodedata.normalize('NFD', s.lower())
             if unicodedata.category(c) != 'Mn'
         )
-    
     q_norm = normalize_str(q.strip())
-    results = db.query(models.Media).filter(
-        or_(models.Media.titulo.ilike(f"%{q}%"),
-            models.Media.titulo_ingles.ilike(f"%{q}%"),
-            models.Media.elenco.ilike(f"%{q}%"),
-            models.Media.director.ilike(f"%{q}%"))
-    ).all()
-    return results
+    # Buscar todas las medias y filtrar en Python por coincidencia normalizada
+    medias = db.query(models.Media).all()
+    resultados = []
+    for m in medias:
+        if (
+            q_norm in normalize_str(m.titulo or "") or
+            q_norm in normalize_str(m.titulo_ingles or "") or
+            q_norm in normalize_str(m.elenco or "") or
+            q_norm in normalize_str(m.director or "")
+        ):
+            resultados.append(m)
+    return resultados
 
 @app.on_event("startup")
 def startup():

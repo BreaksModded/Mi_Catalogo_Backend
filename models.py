@@ -13,6 +13,13 @@ def normalize_str(s):
 
 Base = declarative_base()
 
+# Tabla intermedia para la relación muchos-a-muchos Media <-> Keyword
+media_keyword = Table(
+    'media_keyword', Base.metadata,
+    Column('media_id', Integer, ForeignKey('media.id'), primary_key=True),
+    Column('keyword_id', Integer, ForeignKey('keyword.id'), primary_key=True)
+)
+
 # Tabla intermedia para la relación muchos-a-muchos Media <-> Tag
 media_tag = Table(
     'media_tag', Base.metadata,
@@ -51,6 +58,13 @@ class Media(Base):
     titulo_ingles = Column(String, nullable=True)
     tags = relationship('Tag', secondary=media_tag, back_populates='medias')
     listas = relationship('Lista', secondary=lista_media, back_populates='medias')
+    keywords = relationship('Keyword', secondary=media_keyword, back_populates='medias')
+
+class Keyword(Base):
+    __tablename__ = 'keyword'
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String, unique=True, index=True)
+    medias = relationship('Media', secondary=media_keyword, back_populates='keywords')
 
 class Tag(Base):
     __tablename__ = 'tag'
