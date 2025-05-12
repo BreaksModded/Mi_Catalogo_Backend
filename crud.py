@@ -2,6 +2,8 @@ import models
 import schemas
 from sqlalchemy.orm import Session
 import os
+import unicodedata
+import requests
 
 def get_medias(db: Session, skip: int = 0, limit: int = 5000, order_by: str = None, tipo: str = None, pendiente: bool = None,
                genero: str = None, min_year: int = None, max_year: int = None, min_nota: float = None, min_nota_personal: float = None,
