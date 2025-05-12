@@ -58,6 +58,43 @@ def create_media(db: Session, media: schemas.MediaCreate):
         **{k: v for k, v in media.dict().items() if k not in ['tags', 'nota_tmdb', 'nota_imdb']}
     )
     db_media.tags = tags
+    # --- Añadir keywords de TMDb si hay tmdb_id y tipo ---
+    TMDB_API_KEY = os.getenv("TMDB_API_KEY", "ffac9eb544563d4d36980ea638fca7ce")
+    TMDB_BASE_URL = "https://api.themoviedb.org/3"
+    def normalize_tipo(tipo):
+        if not tipo:
+            return ''
+        tipo_norm = ''.join(c for c in unicodedata.normalize('NFD', tipo.lower()) if unicodedata.category(c) != 'Mn')
+        if tipo_norm in ['pelicula', 'movie']:
+            return 'pelicula'
+        elif tipo_norm in ['serie', 'tv']:
+            return 'serie'
+        return tipo_norm
+    if getattr(media, 'tmdb_id', None) and getattr(media, 'tipo', None):
+        tipo_norm = normalize_tipo(media.tipo)
+        if tipo_norm == 'pelicula':
+            url = f"{TMDB_BASE_URL}/movie/{media.tmdb_id}/keywords"
+        elif tipo_norm == 'serie':
+            url = f"{TMDB_BASE_URL}/tv/{media.tmdb_id}/keywords"
+        else:
+            url = None
+        if url:
+            resp = requests.get(url, params={"api_key": TMDB_API_KEY})
+            if resp.status_code == 200:
+                data = resp.json()
+                kw_list = data.get('keywords') if tipo_norm == 'pelicula' else data.get('results')
+                if kw_list:
+                    for kw in kw_list:
+                        nombre_kw = kw.get('name')
+                        if not nombre_kw:
+                            continue
+                        db_kw = db.query(models.Keyword).filter(models.Keyword.nombre == nombre_kw).first()
+                        if not db_kw:
+                            db_kw = models.Keyword(nombre=nombre_kw)
+                            db.add(db_kw)
+                            db.flush()
+                        if db_kw not in db_media.keywords:
+                            db_media.keywords.append(db_kw)
     db.add(db_media)
     db.commit()
     db.refresh(db_media)
