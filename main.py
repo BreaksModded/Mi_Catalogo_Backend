@@ -112,6 +112,11 @@ def read_media(media_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Media not found")
     return db_media
 
+@app.get("/medias/{media_id}/similares", response_model=List[schemas.Media])
+def get_similares(media_id: int, db: Session = Depends(get_db)):
+    similares = crud.get_similares_para_media(db, media_id, n=24)
+    return similares
+
 @app.post("/medias", response_model=schemas.Media)
 def create_media(media: schemas.MediaCreate, db: Session = Depends(get_db)):
     try:
