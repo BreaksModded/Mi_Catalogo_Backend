@@ -6,7 +6,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Request, Body, statu
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 import requests
 import time
 from fastapi.staticfiles import StaticFiles
@@ -36,7 +36,6 @@ app.add_middleware(
 
 OMDB_API_KEY = "5d30c905"
 OMDB_URL = "http://www.omdbapi.com/"
-
 TMDB_API_KEY = "ffac9eb544563d4d36980ea638fca7ce"
 TMDB_BEARER = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJmZmFjOWViNTQ0NTYzZDRkMzY5ODBlYTYzOGZjYTdjZSIsIm5iZiI6MTc0NTU3NTMwOC45NDQsInN1YiI6IjY4MGI1ZDhjYmZiZGYxZjhjNTg5ZGQxZiIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.XV-EtgE1xTwwSNtrlQYgemgsaqOApCGwvyNWehExQvs"
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
@@ -45,8 +44,6 @@ TMDB_BASE_URL = "https://api.themoviedb.org/3"
 CATALOG_BUILD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../catalog/build'))
 if os.path.isdir(CATALOG_BUILD_DIR):
     app.mount("/static", StaticFiles(directory=os.path.join(CATALOG_BUILD_DIR, 'static')), name="static")
-
-from sqlalchemy import or_
 
 def get_db():
     db = database.SessionLocal()
@@ -57,7 +54,6 @@ def get_db():
 
 @app.get("/search", response_model=List[schemas.Media])
 def search_medias(q: str = Query(..., description="Búsqueda por título, actor o director"), db: Session = Depends(get_db)):
-    import unicodedata
     def normalize_str(s):
         return ''.join(
             c for c in unicodedata.normalize('NFD', s.lower())
@@ -81,7 +77,7 @@ def search_medias(q: str = Query(..., description="Búsqueda por título, actor 
 def startup():
     database.init_db()
 
-@app.get("/medias", response_model=list[schemas.Media])
+@app.get("/medias", response_model=List[schemas.Media])
 def read_medias(
     skip: int = 0,
     limit: int = 24,
@@ -104,6 +100,19 @@ def read_medias(
         favorito=favorito, tag_id=tag_id
     )
     return result
+
+@app.get("/medias/count")
+def count_medias(
+    pendiente: bool = None,
+    tipo: str = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.Media)
+    if pendiente is not None:
+        query = query.filter(models.Media.pendiente == pendiente)
+    if tipo:
+        query = query.filter(models.Media.tipo.ilike(tipo))
+    return {"count": query.count()}
 
 @app.get("/medias/{media_id}", response_model=schemas.Media)
 def read_media(media_id: int, db: Session = Depends(get_db)):
@@ -152,11 +161,11 @@ def update_anotacion_personal(media_id: int, anotacion_personal: str = Body(...)
         raise HTTPException(status_code=404, detail="Media not found")
     return db_media
 
-@app.get("/pendientes", response_model=list[schemas.Media])
+@app.get("/pendientes", response_model=List[schemas.Media])
 def read_pendientes(skip: int = 0, limit: int = 24, db: Session = Depends(get_db)):
     return crud.get_pendientes(db, skip=skip, limit=limit)
 
-@app.get("/favoritos", response_model=list[schemas.Media])
+@app.get("/favoritos", response_model=List[schemas.Media])
 def read_favoritos(skip: int = 0, limit: int = 24, db: Session = Depends(get_db)):
     return crud.get_favoritos(db, skip=skip, limit=limit)
 
@@ -232,7 +241,7 @@ def get_tmdb_info(
                     videos_en = videos_r_en.json().get("results", [])
                     yt_trailers = [v for v in videos_en if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
             if yt_trailers:
-                trailer_url = f"https://www.youtube.com/watch?v={yt_trailers[0]['key']}"
+                trailer_url = f"<https://www.youtube.com/watch?v={yt_trailers>[0]['key']}"
             return {
                 "titulo": detail.get("title") or detail.get("name", ""),
                 "titulo_original": detail.get("original_title", ""),
@@ -273,7 +282,8 @@ def get_tmdb_info(
                 elenco = ", ".join(elenco_list)
             temporadas_detalle = []
             for season in detail.get("seasons", []):
-                if not season.get("season_number"): continue
+                if not season.get("season_number"):
+                    continue
                 season_number = season["season_number"]
                 season_url = f"{TMDB_BASE_URL}/tv/{id}/season/{season_number}"
                 season_r = requests.get(season_url, headers=headers, params={"language": "es-ES"})
@@ -309,7 +319,7 @@ def get_tmdb_info(
                     videos_en = videos_r_en.json().get("results", [])
                     yt_trailers = [v for v in videos_en if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
             if yt_trailers:
-                trailer_url = f"https://www.youtube.com/watch?v={yt_trailers[0]['key']}"
+                trailer_url = f"<https://www.youtube.com/watch?v={yt_trailers>[0]['key']}"
             return {
                 "titulo": detail.get("name", ""),
                 "titulo_original": detail.get("original_name", ""),
@@ -342,7 +352,8 @@ def get_tmdb_info(
             raise HTTPException(status_code=404, detail="No encontrado en TMDb")
         opciones = []
         for res in data["results"]:
-            if res["media_type"] not in ("movie", "tv"): continue
+            if res["media_type"] not in ("movie", "tv"):
+                continue
             opciones.append({
                 "id": res["id"],
                 "media_type": res["media_type"],
@@ -440,9 +451,9 @@ def get_tmdb_info(
         # Obtener temporadas y episodios
         temporadas_detalle = []
         for season in detail.get("seasons", []):
-            if not season.get("season_number"): continue
+            if not season.get("season_number"):
+                continue
             season_number = season["season_number"]
-            # Llamada a /tv/{id}/season/{season_number}
             season_url = f"{TMDB_BASE_URL}/tv/{item['id']}/season/{season_number}"
             season_r = requests.get(season_url, headers=headers, params={"language": "es-ES"})
             if season_r.status_code != 200:
