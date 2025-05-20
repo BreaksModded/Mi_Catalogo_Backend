@@ -168,6 +168,7 @@ def genero_stats(db: Session = Depends(get_db)):
                 genero_notas.setdefault(g_norm, []).append(m.nota_personal)
     mas_visto_norm = max(genero_count.items(), key=lambda x: x[1])[0] if genero_count else None
     mas_visto = genero_original.get(mas_visto_norm) if mas_visto_norm else None
+    mas_visto_count = genero_count.get(mas_visto_norm, 0) if mas_visto_norm else 0
     mejor_valorado = None
     mejor_media = None
     if genero_notas:
@@ -178,6 +179,7 @@ def genero_stats(db: Session = Depends(get_db)):
             mejor_media = round(candidatos[0][1], 2)
     return {
         "mas_visto": mas_visto,
+        "mas_visto_count": mas_visto_count,
         "mejor_valorado": mejor_valorado,
         "mejor_valorado_media": mejor_media
     }
