@@ -367,7 +367,7 @@ def get_tmdb_info(
                     videos_en = videos_r_en.json().get("results", [])
                     yt_trailers = [v for v in videos_en if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
             if yt_trailers:
-                trailer_url = f"<https://www.youtube.com/watch?v={yt_trailers>[0]['key']}"
+                trailer_url = f"https://www.youtube.com/watch?v={yt_trailers[0]['key']}"
             return {
                 "titulo": detail.get("title") or detail.get("name", ""),
                 "titulo_original": detail.get("original_title", ""),
@@ -445,7 +445,7 @@ def get_tmdb_info(
                     videos_en = videos_r_en.json().get("results", [])
                     yt_trailers = [v for v in videos_en if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
             if yt_trailers:
-                trailer_url = f"<https://www.youtube.com/watch?v={yt_trailers>[0]['key']}"
+                trailer_url = f"https://www.youtube.com/watch?v={yt_trailers[0]['key']}"
             return {
                 "titulo": detail.get("name", ""),
                 "titulo_original": detail.get("original_name", ""),
