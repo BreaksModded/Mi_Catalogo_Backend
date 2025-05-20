@@ -147,30 +147,14 @@ def top5_medias(
         for m in result
     ]
 
-@app.get("/medias/genero_stats")
-def genero_stats(db: Session = Depends(get_db)):
-    import unicodedata
-
-@app.get("/medias/generos_vistos")
-def generos_vistos(db: Session = Depends(get_db)):
+def get_generos(db: Session):
     import unicodedata
     def normalize(s):
         return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
     medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
     genero_count = {}
     genero_original = {}
-    for m in medias:
-        generos = (getattr(m, 'genero', '') or '').split(',')
-        generos = [g.strip() for g in generos if g.strip()]
-        for g in generos:
-            g_norm = normalize(g)
-            genero_count[g_norm] = genero_count.get(g_norm, 0) + 1
-    medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
-    genero_count = {}
     genero_notas = {}
-    genero_original = {}  # Mapea el género normalizado al nombre original (primera aparición)
-    def normalize(s):
-        return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
     for m in medias:
         generos = (getattr(m, 'genero', '') or '').split(',')
         generos = [g.strip() for g in generos if g.strip()]
@@ -181,6 +165,16 @@ def generos_vistos(db: Session = Depends(get_db)):
                 genero_original[g_norm] = g  # Guarda el nombre original
             if m.nota_personal is not None:
                 genero_notas.setdefault(g_norm, []).append(m.nota_personal)
+    return genero_count, genero_original, genero_notas
+
+@app.get("/medias/distribucion_generos")
+def distribucion_generos(db: Session = Depends(get_db)):
+    genero_count, genero_original, _ = get_generos(db)
+    return {genero_original[g]: genero_count[g] for g in genero_count}
+
+@app.get("/medias/generos_vistos")
+def generos_vistos(db: Session = Depends(get_db)):
+    genero_count, genero_original, genero_notas = get_generos(db)
     # Género más visto
     mas_visto = None
     mas_visto_count = 0
@@ -192,7 +186,6 @@ def generos_vistos(db: Session = Depends(get_db)):
     mejor_valorado = None
     mejor_media = None
     if genero_notas:
-        # Permite que con al menos 1 nota se calcule el mejor valorado
         candidatos = [(g, sum(notas)/len(notas), len(notas)) for g, notas in genero_notas.items() if len(notas) >= 1]
         candidatos.sort(key=lambda x: (-x[1], -x[2]))
         if candidatos:
@@ -215,13 +208,6 @@ def generos_vistos(db: Session = Depends(get_db)):
     genero_original = {}
     for m in medias:
         generos = (getattr(m, 'genero', '') or '').split(',')
-        generos = [g.strip() for g in generos if g.strip()]
-        for g in generos:
-            g_norm = normalize(g)
-            genero_count[g_norm] = genero_count.get(g_norm, 0) + 1
-            if g_norm not in genero_original:
-                genero_original[g_norm] = g
-    # Devolver {nombre_original: cantidad}
     return {genero_original[g]: genero_count[g] for g in genero_count}
 
 @app.get("/medias/vistos_por_anio")
