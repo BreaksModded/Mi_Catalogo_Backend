@@ -158,19 +158,23 @@ def genero_stats(db: Session = Depends(get_db)):
     genero_original = {}  # Mapea el género normalizado al nombre original (primera aparición)
     for m in medias:
         generos = (getattr(m, 'genero', '') or '').split(',')
-        generos = [normalize(g) for g in generos if g.strip()]
+        generos = [g.strip() for g in generos if g.strip()]
         for g in generos:
-            genero_count[g] = genero_count.get(g, 0) + 1
+            g_norm = normalize(g)
+            genero_count[g_norm] = genero_count.get(g_norm, 0) + 1
+            if g_norm not in genero_original:
+                genero_original[g_norm] = g  # Guarda el nombre original
             if m.nota_personal is not None:
-                genero_notas.setdefault(g, []).append(m.nota_personal)
-    mas_visto = max(genero_count.items(), key=lambda x: x[1])[0] if genero_count else None
+                genero_notas.setdefault(g_norm, []).append(m.nota_personal)
+    mas_visto_norm = max(genero_count.items(), key=lambda x: x[1])[0] if genero_count else None
+    mas_visto = genero_original.get(mas_visto_norm) if mas_visto_norm else None
     mejor_valorado = None
     mejor_media = None
     if genero_notas:
         candidatos = [(g, sum(notas)/len(notas), len(notas)) for g, notas in genero_notas.items() if len(notas) >= 2]
         candidatos.sort(key=lambda x: (-x[1], -x[2]))
         if candidatos:
-            mejor_valorado = candidatos[0][0]
+            mejor_valorado = genero_original.get(candidatos[0][0], candidatos[0][0])
             mejor_media = round(candidatos[0][1], 2)
     return {
         "mas_visto": mas_visto,
@@ -178,6 +182,16 @@ def genero_stats(db: Session = Depends(get_db)):
         "mejor_valorado_media": mejor_media
     }
 
+@app.get("/medias/vistos_por_anio")
+def vistos_por_anio(db: Session = Depends(get_db)):
+    medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
+    conteo = {}
+    for m in medias:
+        anio = getattr(m, 'anio', None)
+        if anio is not None:
+            conteo[anio] = conteo.get(anio, 0) + 1
+    # Devuelve ordenado por año ascendente
+    return dict(sorted(conteo.items()))
 
 @app.get("/medias/{media_id}", response_model=schemas.Media)
 def read_media(media_id: int, db: Session = Depends(get_db)):
