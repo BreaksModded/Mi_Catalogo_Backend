@@ -35,6 +35,8 @@ def get_medias(db: Session, skip: int = 0, limit: int = 5000, order_by: str = No
         query = query.order_by(models.Media.nota_personal.desc().nullslast())
     elif order_by == "nota_tmdb":
         query = query.order_by(models.Media.nota_imdb.desc().nullslast())
+    elif order_by == "random":
+        query = query.order_by(sa.func.random())
     return query.offset(skip).limit(limit).all()
 
 def get_media(db: Session, media_id: int):
