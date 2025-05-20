@@ -119,6 +119,66 @@ def count_medias(
         query = query.filter(models.Media.id.in_(ids))
     return {"count": query.count()}
 
+@app.get("/medias/top5")
+def top5_medias(
+    tipo: str = Query(..., description="pelicula o serie"),
+    db: Session = Depends(get_db)
+):
+    import unicodedata
+    def normalize(s):
+        return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
+    tipo_norm = normalize(tipo)
+    query = db.query(models.Media).filter(
+        models.Media.pendiente == False,
+        models.Media.nota_personal != None
+    )
+    ids = [m.id for m in query if normalize(m.tipo) == tipo_norm]
+    result = db.query(models.Media).filter(
+        models.Media.id.in_(ids)
+    ).order_by(models.Media.nota_personal.desc()).limit(5).all()
+    return [
+        {
+            "id": m.id,
+            "titulo": m.titulo,
+            "nota_personal": m.nota_personal,
+            "anio": getattr(m, "anio", None),
+            "tipo": m.tipo
+        }
+        for m in result
+    ]
+
+@app.get("/medias/genero_stats")
+def genero_stats(
+    db: Session = Depends(get_db)
+):
+    import unicodedata
+    def normalize(s):
+        return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
+    medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
+    genero_count = {}
+    genero_notas = {}
+    for m in medias:
+        generos = (getattr(m, 'genero', '') or '').split(',')
+        generos = [normalize(g) for g in generos if g.strip()]
+        for g in generos:
+            genero_count[g] = genero_count.get(g, 0) + 1
+            if m.nota_personal is not None:
+                genero_notas.setdefault(g, []).append(m.nota_personal)
+    mas_visto = max(genero_count.items(), key=lambda x: x[1])[0] if genero_count else None
+    mejor_valorado = None
+    mejor_media = None
+    if genero_notas:
+        candidatos = [(g, sum(notas)/len(notas), len(notas)) for g, notas in genero_notas.items() if len(notas) >= 2]
+        candidatos.sort(key=lambda x: (-x[1], -x[2]))
+        if candidatos:
+            mejor_valorado = candidatos[0][0]
+            mejor_media = round(candidatos[0][1], 2)
+    return {
+        "mas_visto": mas_visto,
+        "mejor_valorado": mejor_valorado,
+        "mejor_valorado_media": mejor_media
+    }
+
 
 @app.get("/medias/{media_id}", response_model=schemas.Media)
 def read_media(media_id: int, db: Session = Depends(get_db)):
