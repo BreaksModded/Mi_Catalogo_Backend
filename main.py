@@ -93,13 +93,20 @@ def read_medias(
     min_nota_personal: float = None,
     db: Session = Depends(get_db)
 ):
-    result = crud.get_medias(
-        db, skip=skip, limit=limit, order_by=order_by, tipo=tipo, pendiente=pendiente,
-        genero=genero, min_year=min_year, max_year=max_year,
-        min_nota=min_nota, min_nota_personal=min_nota_personal,
-        favorito=favorito, tag_id=tag_id
-    )
-    return result
+    import traceback
+    try:
+        result = crud.get_medias(
+            db, skip=skip, limit=limit, order_by=order_by, tipo=tipo, pendiente=pendiente,
+            genero=genero, min_year=min_year, max_year=max_year,
+            min_nota=min_nota, min_nota_personal=min_nota_personal,
+            favorito=favorito, tag_id=tag_id
+        )
+        return result
+    except Exception as e:
+        print("ERROR EN /medias:", e)
+        traceback.print_exc()
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
 
 import unicodedata
 
