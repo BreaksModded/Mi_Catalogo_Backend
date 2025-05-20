@@ -198,17 +198,7 @@ def generos_vistos(db: Session = Depends(get_db)):
         "mejor_valorado_media": mejor_media if mejor_media is not None else ''
     }
 
-@app.get("/medias/generos_vistos")
-def generos_vistos(db: Session = Depends(get_db)):
-    import unicodedata
-    def normalize(s):
-        return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
-    medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
-    genero_count = {}
-    genero_original = {}
-    for m in medias:
-        generos = (getattr(m, 'genero', '') or '').split(',')
-    return {genero_original[g]: genero_count[g] for g in genero_count}
+
 
 @app.get("/medias/vistos_por_anio")
 def vistos_por_anio(db: Session = Depends(get_db)):
