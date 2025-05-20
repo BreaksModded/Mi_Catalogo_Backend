@@ -198,7 +198,39 @@ def generos_vistos(db: Session = Depends(get_db)):
         "mejor_valorado_media": mejor_media if mejor_media is not None else ''
     }
 
+@app.get("/medias/peor_pelicula", response_model=schemas.Media)
+def peor_pelicula(db: Session = Depends(get_db)):
+    def normalize(s):
+        return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
+    tipo_norm = 'pelicula'
+    query = db.query(models.Media).filter(
+        models.Media.pendiente == False,
+        models.Media.nota_personal != None
+    )
+    ids = [m.id for m in query if normalize(m.tipo) == tipo_norm]
+    result = db.query(models.Media).filter(
+        models.Media.id.in_(ids)
+    ).order_by(models.Media.nota_personal.asc()).first()
+    if not result:
+        raise HTTPException(status_code=404, detail="No hay películas con nota personal")
+    return result
 
+@app.get("/medias/peor_serie", response_model=schemas.Media)
+def peor_serie(db: Session = Depends(get_db)):
+    def normalize(s):
+        return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
+    tipo_norm = 'serie'
+    query = db.query(models.Media).filter(
+        models.Media.pendiente == False,
+        models.Media.nota_personal != None
+    )
+    ids = [m.id for m in query if normalize(m.tipo) == tipo_norm]
+    result = db.query(models.Media).filter(
+        models.Media.id.in_(ids)
+    ).order_by(models.Media.nota_personal.asc()).first()
+    if not result:
+        raise HTTPException(status_code=404, detail="No hay series con nota personal")
+    return result
 
 @app.get("/medias/vistos_por_anio")
 def vistos_por_anio(db: Session = Depends(get_db)):
