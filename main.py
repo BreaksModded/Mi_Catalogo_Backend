@@ -101,6 +101,8 @@ def read_medias(
     )
     return result
 
+import unicodedata
+
 @app.get("/medias/count")
 def count_medias(
     pendiente: bool = None,
@@ -111,8 +113,12 @@ def count_medias(
     if pendiente is not None:
         query = query.filter(models.Media.pendiente == pendiente)
     if tipo:
-        query = query.filter(models.Media.tipo.ilike(tipo))
+        def normalize(s):
+            return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
+        ids = [m.id for m in query if normalize(m.tipo) == normalize(tipo)]
+        query = query.filter(models.Media.id.in_(ids))
     return {"count": query.count()}
+
 
 @app.get("/medias/{media_id}", response_model=schemas.Media)
 def read_media(media_id: int, db: Session = Depends(get_db)):
