@@ -148,15 +148,14 @@ def top5_medias(
     ]
 
 @app.get("/medias/genero_stats")
-def genero_stats(
-    db: Session = Depends(get_db)
-):
+def genero_stats(db: Session = Depends(get_db)):
     import unicodedata
     def normalize(s):
         return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
     medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
     genero_count = {}
     genero_notas = {}
+    genero_original = {}  # Mapea el género normalizado al nombre original (primera aparición)
     for m in medias:
         generos = (getattr(m, 'genero', '') or '').split(',')
         generos = [normalize(g) for g in generos if g.strip()]
