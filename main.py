@@ -150,6 +150,26 @@ def top5_medias(
 @app.get("/medias/genero_stats")
 def genero_stats(db: Session = Depends(get_db)):
     import unicodedata
+
+@app.get("/medias/generos_vistos")
+def generos_vistos(db: Session = Depends(get_db)):
+    import unicodedata
+    def normalize(s):
+        return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
+    medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
+    genero_count = {}
+    genero_original = {}
+    for m in medias:
+        generos = (getattr(m, 'genero', '') or '').split(',')
+        generos = [g.strip() for g in generos if g.strip()]
+        for g in generos:
+            g_norm = normalize(g)
+            genero_count[g_norm] = genero_count.get(g_norm, 0) + 1
+            if g_norm not in genero_original:
+                genero_original[g_norm] = g
+    # Devolver {nombre_original: cantidad}
+    return {genero_original[g]: genero_count[g] for g in genero_count}
+
     def normalize(s):
         return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
     medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
@@ -187,6 +207,29 @@ def genero_stats(db: Session = Depends(get_db)):
 @app.get("/medias/vistos_por_anio")
 def vistos_por_anio(db: Session = Depends(get_db)):
     medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
+
+@app.get("/medias/top_personas")
+def top_personas(db: Session = Depends(get_db)):
+    from collections import Counter
+    medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
+    actores = []
+    directores = []
+    for m in medias:
+        # Elenco: puede ser una cadena separada por coma
+        elenco = (getattr(m, 'elenco', '') or '').split(',')
+        elenco = [a.strip() for a in elenco if a.strip()]
+        actores.extend(elenco)
+        # Director: puede ser una cadena separada por coma
+        director = (getattr(m, 'director', '') or '').split(',')
+        director = [d.strip() for d in director if d.strip()]
+        directores.extend(director)
+    top_actores = Counter(actores).most_common(5)
+    top_directores = Counter(directores).most_common(5)
+    return {
+        "top_actores": top_actores,
+        "top_directores": top_directores
+    }
+
     conteo = {}
     for m in medias:
         anio = getattr(m, 'anio', None)
