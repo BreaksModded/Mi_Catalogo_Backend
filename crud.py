@@ -41,16 +41,21 @@ def get_media(db: Session, media_id: int):
     return db.query(models.Media).filter(models.Media.id == media_id).first()
 
 # --- NUEVO: obtener similares por género y keywords ---
+from sqlalchemy import or_
+
 def get_similares_para_media(db: Session, media_id: int, n=24):
-    from collections import Counter
     base = db.query(models.Media).filter(models.Media.id == media_id).first()
     if not base:
         return []
     # Normalizar géneros (pueden estar separados por coma)
     base_generos = set(g.strip().lower() for g in (base.genero or '').split(',') if g.strip())
     base_keywords = set(kw.nombre for kw in base.keywords)
-    # Buscar todas las demás medias
-    medias = db.query(models.Media).filter(models.Media.id != media_id).all()
+    # Filtrar solo medias que compartan al menos un género
+    query = db.query(models.Media).filter(models.Media.id != media_id)
+    if base_generos:
+        genero_filter = [models.Media.genero.ilike(f"%{g}%") for g in base_generos]
+        query = query.filter(or_(*genero_filter))
+    medias = query.all()
     scores = []
     for m in medias:
         m_generos = set(g.strip().lower() for g in (m.genero or '').split(',') if g.strip())
