@@ -210,18 +210,6 @@ def vistos_por_anio(db: Session = Depends(get_db)):
             conteo[anio] = conteo.get(anio, 0) + 1
     return conteo
 
-# Catch-all para rutas frontend React
-from fastapi.responses import FileResponse
-import os
-CATALOG_BUILD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../catalog/build'))
-
-@app.get("/{full_path:path}")
-def serve_react_app(full_path: str):
-    index_path = os.path.join(CATALOG_BUILD_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {"error": "index.html not found"}
-
 @app.get("/medias/top_personas")
 def top_personas(db: Session = Depends(get_db)):
     from collections import Counter
@@ -636,15 +624,6 @@ def get_tmdb_info(
 def get_listas(db: Session = Depends(get_db)):
     return crud.get_listas(db)
 
-# --- Al final del archivo: servir frontend React para rutas no API ---
-@app.get("/", include_in_schema=False)
-@app.get("/{full_path:path}", include_in_schema=False)
-def serve_react_app(full_path: str = ""):
-    index_path = os.path.join(CATALOG_BUILD_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {"error": "Frontend no compilado. Ejecuta 'npm run build' en la carpeta catalog."}
-
 @app.get("/listas/{lista_id}", response_model=schemas.Lista)
 def get_lista(lista_id: int, db: Session = Depends(get_db)):
     lista = crud.get_lista(db, lista_id)
@@ -683,3 +662,12 @@ def remove_media_from_lista(lista_id: int, media_id: int, db: Session = Depends(
     if not lista:
         raise HTTPException(status_code=404, detail="Lista o media no encontrada")
     return lista
+
+# --- Al final del archivo: servir frontend React para rutas no API ---
+@app.get("/", include_in_schema=False)
+@app.get("/{full_path:path}", include_in_schema=False)
+def serve_react_app(full_path: str = ""):
+    index_path = os.path.join(CATALOG_BUILD_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"error": "Frontend no compilado. Ejecuta 'npm run build' en la carpeta catalog."}
