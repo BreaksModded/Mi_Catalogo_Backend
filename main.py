@@ -210,6 +210,18 @@ def vistos_por_anio(db: Session = Depends(get_db)):
             conteo[anio] = conteo.get(anio, 0) + 1
     return conteo
 
+# Catch-all para rutas frontend React
+from fastapi.responses import FileResponse
+import os
+CATALOG_BUILD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../catalog/build'))
+
+@app.get("/{full_path:path}")
+def serve_react_app(full_path: str):
+    index_path = os.path.join(CATALOG_BUILD_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"error": "index.html not found"}
+
 @app.get("/medias/top_personas")
 def top_personas(db: Session = Depends(get_db)):
     from collections import Counter
