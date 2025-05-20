@@ -207,6 +207,12 @@ def generos_vistos(db: Session = Depends(get_db)):
 @app.get("/medias/vistos_por_anio")
 def vistos_por_anio(db: Session = Depends(get_db)):
     medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
+    conteo = {}
+    for m in medias:
+        anio = getattr(m, 'anio', None)
+        if anio:
+            conteo[anio] = conteo.get(anio, 0) + 1
+    return conteo
 
 @app.get("/medias/top_personas")
 def top_personas(db: Session = Depends(get_db)):
