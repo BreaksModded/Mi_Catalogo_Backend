@@ -1,31 +1,58 @@
-import models
-import database
-import crud
-import schemas
-from fastapi import FastAPI, Depends, HTTPException, Query, Request, Body, status
+import os
+import re
+import json
+import unicodedata
+from datetime import datetime, timedelta
+from typing import List, Optional, Any, Dict
+
+from fastapi import (
+    FastAPI, Depends, HTTPException, Query, Request, Response, 
+    status, Body, Form, File, UploadFile
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 import requests
-import time
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import os
-from typing import List
-import unicodedata
 from bs4 import BeautifulSoup
 
-app = FastAPI()
+# Importar modelos, esquemas y utilidades de autenticación
+from . import models, schemas, auth
+from .database import SessionLocal, engine, get_db
+from .config import settings
 
-# Activar compresión GZIP para todas las respuestas
-app.add_middleware(GZipMiddleware, minimum_size=500)
+# Verificar si estamos en modo de desarrollo
+IS_DEV = settings.ENV == "development"
 
+# Crear tablas en la base de datos (en desarrollo)
+if IS_DEV:
+    models.Base.metadata.create_all(bind=engine)
+
+# Configuración de CORS
 origins = [
-    "https://mi-catalogo-oguv.vercel.app",
-    "http://localhost:3000",  # para desarrollo local, si lo usas
+    settings.FRONTEND_URL,
+    "http://localhost:3000",  # React por defecto
+    "http://localhost:8000",  # FastAPI por defecto
 ]
 
+# Inicializar la aplicación FastAPI
+app = FastAPI(
+    title="Home Cinema API",
+    description="API para gestionar tu catálogo personal de películas y series",
+    version="1.0.0",
+    docs_url="/docs" if IS_DEV else None,
+    redoc_url="/redoc" if IS_DEV else None,
+    openapi_url="/openapi.json" if IS_DEV else None,
+)
+
+# Añadir middlewares
+app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -34,6 +61,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Montar archivos estáticos
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Variables globales
 OMDB_API_KEY = "5d30c905"
 OMDB_URL = "http://www.omdbapi.com/"
 TMDB_API_KEY = "ffac9eb544563d4d36980ea638fca7ce"
@@ -45,12 +76,49 @@ CATALOG_BUILD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../
 if os.path.isdir(CATALOG_BUILD_DIR):
     app.mount("/static", StaticFiles(directory=os.path.join(CATALOG_BUILD_DIR, 'static')), name="static")
 
-def get_db():
-    db = database.SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# --- Rutas de Autenticación ---
+
+@app.post("/token", response_model=schemas.Token)
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+    """
+    Obtener token de acceso para autenticación.
+    """
+    token = auth.authenticate_and_get_token(
+        db, form_data.username, form_data.password
+    )
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuario o contraseña incorrectos",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
+
+@app.post("/users/", response_model=schemas.UserInDB, status_code=status.HTTP_201_CREATED)
+def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    """
+    Crear un nuevo usuario.
+    """
+    return auth.create_user(db=db, user=user)
+
+@app.get("/users/me/", response_model=schemas.UserInDB)
+async def read_users_me(current_user: models.User = Depends(auth.get_current_active_user)):
+    """
+    Obtener información del usuario actual.
+    """
+    return current_user
+
+@app.get("/users/me/items/")
+async def read_own_items(
+    current_user: models.User = Depends(auth.get_current_active_user)
+):
+    """
+    Obtener los ítems del usuario actual.
+    """
+    return [{"item_id": 1, "owner": current_user.username}]
 
 @app.get("/search", response_model=List[schemas.Media])
 def search_medias(q: str = Query(..., description="Búsqueda por título, actor o director"), db: Session = Depends(get_db)):

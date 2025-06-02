@@ -13,6 +13,7 @@ class Tag(TagBase):
     class Config:
         from_attributes = True
 
+# Media schemas
 class MediaBase(BaseModel):
     tmdb_id: Optional[int] = None
     titulo: str
@@ -50,16 +51,79 @@ class Media(MediaBase):
     class Config:
         from_attributes = True
 
+# UserMedia schemas
+class UserMediaBase(BaseModel):
+    nota_personal: Optional[float] = Field(None, ge=0, le=10)
+    favorito: bool = False
+    pendiente: bool = False
+    anotaciones: Optional[str] = None
+
+class UserMediaCreate(UserMediaBase):
+    media_id: int
+
+class UserMediaUpdate(UserMediaBase):
+    pass
+
+class UserMedia(UserMediaBase):
+    id: int
+    media: Media
+    fecha_creacion: datetime
+    fecha_modificacion: Optional[datetime] = None
+    
+    class Config:
+        orm_mode = True
+
+# UserTag schemas
+class UserTagBase(BaseModel):
+    nombre: str = Field(..., min_length=1, max_length=50)
+    color: str = Field("#6c757d", regex="^#(?:[0-9a-fA-F]{3}){1,2}$")
+
+class UserTagCreate(UserTagBase):
+    pass
+
+class UserTag(UserTagBase):
+    id: int
+    created_at: datetime
+    
+    class Config:
+        orm_mode = True
+
+# List schemas
 class ListaBase(BaseModel):
-    nombre: str
-    descripcion: str = ""
+    nombre: str = Field(..., min_length=1, max_length=100)
+    descripcion: Optional[str] = Field(None, max_length=500)
 
 class ListaCreate(ListaBase):
     pass
 
+class ListaUpdate(ListaBase):
+    pass
+
 class Lista(ListaBase):
     id: int
+    user_id: int
     fecha_creacion: datetime
     medias: List[Media] = []
+
     class Config:
-        from_attributes = True
+        orm_mode = True
+
+# Keyword schemas
+class KeywordBase(BaseModel):
+    nombre: str
+
+class KeywordCreate(KeywordBase):
+    pass
+
+class Keyword(KeywordBase):
+    id: int
+    
+    class Config:
+        orm_mode = True
+
+# Response schemas
+class PaginatedResponse(BaseModel):
+    total: int
+    items: List[Any]
+    skip: int
+    limit: int
