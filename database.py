@@ -11,7 +11,9 @@ if not DATABASE_URL:
 # Para Session Pooler de Supabase, usar SSL
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"sslmode": "require"}
+    connect_args={"sslmode": "require"},
+    pool_pre_ping=True,  # Verificar conexiones antes de usar
+    pool_recycle=300     # Reciclar conexiones cada 5 minutos
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
