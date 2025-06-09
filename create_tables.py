@@ -5,7 +5,13 @@ from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 
 # Configuración de la base de datos
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://media_0t7l_user:DAOS1Key0XhoQAd8G2DUcnWYjk4A0TF9@dpg-d0dku715pdvs739a5520-a.frankfurt-postgres.render.com/media_0t7l")
+# URL de conexión a Supabase
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres.xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx@aws-0-eu-central-1.pooler.supabase.com:5432/postgres"
+)
+
+# Reemplaza la URL anterior con tu URL real de conexión a Supabase
 engine = create_engine(DATABASE_URL)
 Base = declarative_base()
 
