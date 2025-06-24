@@ -91,6 +91,7 @@ def read_medias(
     max_year: int = None,
     min_nota: float = None,
     min_nota_personal: float = None,
+    tmdb_id: int = None,
     db: Session = Depends(get_db)
 ):
     import traceback
@@ -99,7 +100,7 @@ def read_medias(
             db, skip=skip, limit=limit, order_by=order_by, tipo=tipo, pendiente=pendiente,
             genero=genero, min_year=min_year, max_year=max_year,
             min_nota=min_nota, min_nota_personal=min_nota_personal,
-            favorito=favorito, tag_id=tag_id
+            favorito=favorito, tag_id=tag_id, tmdb_id=tmdb_id
         )
         return result
     except Exception as e:
