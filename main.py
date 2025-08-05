@@ -2,6 +2,7 @@ import models
 import database
 import crud
 import schemas
+from translation_service import get_translation_service
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, Body, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -702,6 +703,110 @@ def remove_media_from_lista(lista_id: int, media_id: int, db: Session = Depends(
     if not lista:
         raise HTTPException(status_code=404, detail="Lista o media no encontrada")
     return lista
+
+# --- ENDPOINTS PARA TRADUCCIONES ---
+
+@app.get("/translations/{media_id}")
+def get_media_translation(
+    media_id: int, 
+    language: str = Query(..., description="Language code (e.g., 'en', 'es')"),
+    db: Session = Depends(get_db)
+):
+    """Get translated content for a specific media item"""
+    try:
+        translation_service = get_translation_service(db)
+        translated_content = translation_service.get_translated_content(media_id, language)
+        
+        if not translated_content:
+            raise HTTPException(status_code=404, detail="Media not found")
+        
+        return translated_content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting translation: {str(e)}")
+
+@app.post("/translations/{media_id}/cache")
+def cache_media_translation(
+    media_id: int,
+    language: str = Query(..., description="Language code"),
+    db: Session = Depends(get_db)
+):
+    """Force cache a translation for a media item"""
+    try:
+        # Get media to get TMDb ID
+        media = db.query(models.Media).filter(models.Media.id == media_id).first()
+        if not media or not media.tmdb_id:
+            raise HTTPException(status_code=404, detail="Media not found or no TMDb ID")
+        
+        translation_service = get_translation_service(db)
+        
+        # Fetch and cache from TMDb
+        translation_data = translation_service.fetch_from_tmdb(
+            media.tmdb_id, media.tipo, language
+        )
+        
+        if translation_data:
+            saved_translation = translation_service.save_translation(
+                media_id, language, translation_data
+            )
+            return {"message": "Translation cached successfully", "data": translation_data}
+        else:
+            raise HTTPException(status_code=404, detail="No translation found in TMDb")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error caching translation: {str(e)}")
+
+@app.get("/translations/cache/stats")
+def get_cache_stats(db: Session = Depends(get_db)):
+    """Get statistics about cached translations"""
+    try:
+        from sqlalchemy import func
+        
+        total_translations = db.query(func.count(models.ContentTranslation.id)).scalar()
+        
+        by_language = db.query(
+            models.ContentTranslation.language_code,
+            func.count(models.ContentTranslation.id).label('count')
+        ).group_by(models.ContentTranslation.language_code).all()
+        
+        by_source = db.query(
+            models.ContentTranslation.translation_source,
+            func.count(models.ContentTranslation.id).label('count')
+        ).group_by(models.ContentTranslation.translation_source).all()
+        
+        return {
+            "total_cached_translations": total_translations,
+            "by_language": [{"language": lang, "count": count} for lang, count in by_language],
+            "by_source": [{"source": source, "count": count} for source, count in by_source]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting cache stats: {str(e)}")
+
+@app.delete("/translations/cache/clear")
+def clear_translation_cache(
+    language: str = Query(None, description="Language to clear (optional)"),
+    older_than_days: int = Query(None, description="Clear translations older than X days"),
+    db: Session = Depends(get_db)
+):
+    """Clear translation cache"""
+    try:
+        query = db.query(models.ContentTranslation)
+        
+        if language:
+            query = query.filter(models.ContentTranslation.language_code == language)
+        
+        if older_than_days:
+            from datetime import datetime, timedelta
+            cutoff_date = datetime.utcnow() - timedelta(days=older_than_days)
+            query = query.filter(models.ContentTranslation.created_at < cutoff_date)
+        
+        deleted_count = query.count()
+        query.delete()
+        db.commit()
+        
+        return {"message": f"Cleared {deleted_count} cached translations"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error clearing cache: {str(e)}")
 
 # --- Al final del archivo: servir frontend React para rutas no API ---
 @app.get("/", include_in_schema=False)

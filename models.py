@@ -79,3 +79,28 @@ class Lista(Base):
     descripcion = Column(String, nullable=True)
     fecha_creacion = Column(DateTime, default=datetime.utcnow)
     medias = relationship('Media', secondary=lista_media, back_populates='listas')
+
+class ContentTranslation(Base):
+    __tablename__ = 'content_translations'
+    id = Column(Integer, primary_key=True, index=True)
+    media_id = Column(Integer, ForeignKey('media.id'), nullable=False)
+    language_code = Column(String(5), nullable=False)
+    translated_title = Column(String(500))
+    translated_synopsis = Column(String)
+    translated_description = Column(String)
+    director = Column(String(300))
+    cast_members = Column(String)
+    genres = Column(String(300))
+    translation_source = Column(String(20), default='tmdb')
+    tmdb_id = Column(Integer)
+    media_type = Column(String(10))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relación con Media
+    media = relationship('Media', backref='translations')
+    
+    # Constraint para evitar duplicados
+    __table_args__ = (
+        {'extend_existing': True}
+    )
