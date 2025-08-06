@@ -1,11 +1,12 @@
 # 🎬 Mi Catálogo - Backend
 
-Backend API para la aplicación de gestión de películas y series con sistema de traducciones inteligente.
+Backend API para la aplicación de gestión de películas y series con sistema de traducciones inteligente y portadas dinámicas por idioma.
 
 ## 🚀 Características
 
 - **🎯 API RESTful** - FastAPI con documentación automática
 - **🌐 Sistema de traducciones** - Caché inteligente con TMDb API
+- **🖼️ Portadas dinámicas** - Imágenes que cambian según el idioma seleccionado
 - **🗄️ Base de datos** - PostgreSQL en Supabase
 - **📊 Gestión completa** - Películas, series, listas, tags y favoritos
 - **🔍 Búsqueda avanzada** - Por título, director, actor y género
@@ -29,9 +30,10 @@ Frontend (React) ──→ Backend (FastAPI) ──→ Supabase (PostgreSQL)
 - `PUT /medias/{id}` - Actualizar medio
 - `DELETE /medias/{id}` - Eliminar medio
 
-### 🔍 Búsqueda
+### 🔍 Búsqueda y TMDb
 - `GET /search?q={query}` - Búsqueda por título, director o actor
 - `GET /medias/{id}/similares` - Medios similares
+- `GET /tmdb?title={title}&language={lang}` - Buscar en TMDb con soporte multi-idioma ⭐ **NUEVO**
 
 ### 🌐 Traducciones ⭐ **NUEVO**
 - `GET /translations/{media_id}?language=en` - Obtener traducción
@@ -43,6 +45,53 @@ Frontend (React) ──→ Backend (FastAPI) ──→ Supabase (PostgreSQL)
 - `GET /listas` - Obtener listas personalizadas
 - `POST /listas` - Crear nueva lista
 - `GET /tags` - Obtener tags disponibles
+
+## 🖼️ Sistema de Portadas Dinámicas ⭐ **NUEVO**
+
+### 🎯 Funcionalidad Inteligente
+
+El backend ahora incluye un sistema de **portadas dinámicas** que selecciona automáticamente las mejores imágenes según el idioma solicitado:
+
+```python
+def get_best_poster(tmdb_id, media_type, language="es-ES"):
+    """
+    Busca la mejor portada según el idioma:
+    1. Portadas con texto en el idioma específico
+    2. Portadas sin texto (universales)  
+    3. Fallback a portada por defecto
+    """
+```
+
+### 🌍 Lógica de Selección
+
+1. **Prioridad por idioma**: Busca imágenes con `iso_639_1` que coincida
+2. **Imágenes universales**: Sin texto específico de idioma
+3. **Fallback inteligente**: Portada por defecto de TMDb
+4. **Tamaño optimizado**: w500 para calidad/velocidad óptima
+
+### 📡 Endpoint TMDb Mejorado
+
+```http
+GET /tmdb?id=550&media_type=movie&language=en-US
+```
+
+**Parámetros:**
+- `language`: Código de idioma (es-ES, en-US)
+- `id`: ID de TMDb
+- `media_type`: "movie" o "tv"
+- `title`: Título para búsqueda
+- `listar`: true para mostrar opciones múltiples
+
+**Respuesta mejorada:**
+```json
+{
+  "titulo": "Fight Club",
+  "imagen": "https://image.tmdb.org/t/p/w500/poster_en.jpg",
+  "genero": "Drama, Thriller",
+  "sinopsis": "An insomniac office worker...",
+  "idioma_original": "en"
+}
+```
 
 ## 🌐 Sistema de Traducciones
 
@@ -209,7 +258,23 @@ logging.error(f"TMDb API error: {error}")
 - **Cache hits**: ~95% después del primer uso
 - **Tiempo de respuesta**: <200ms con cache
 - **TMDb requests**: Solo para contenido nuevo
+- **Portadas dinámicas**: <500ms selección inteligente
 - **Base de datos**: Conexiones pooled con SSL
+
+## 🔄 Últimas Actualizaciones
+
+### v2.1.0 - Portadas Dinámicas y Multi-idioma (Enero 2025)
+- ✅ **Sistema de portadas dinámicas** por idioma
+- ✅ **Endpoint /tmdb mejorado** con parámetro language
+- ✅ **Selección inteligente** de imágenes según idioma
+- ✅ **Soporte completo multi-idioma** en todas las respuestas
+- ✅ **Optimización de imágenes** con fallback automático
+
+### v2.0.0 - Sistema de Traducciones (Diciembre 2024)
+- ✅ Sistema completo de traducciones con caché
+- ✅ Integración con TMDb API para contenido multiidioma
+- ✅ Endpoints de gestión de cache de traducciones
+- ✅ Optimización de performance con cache en BD
 
 ## 🤝 Contribución
 

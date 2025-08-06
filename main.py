@@ -53,6 +53,62 @@ def get_db():
     finally:
         db.close()
 
+def get_best_poster(tmdb_id, media_type, language="es-ES"):
+    """
+    Obtiene la mejor portada para el idioma especificado.
+    Busca primero portadas en el idioma solicitado, luego en inglés, y finalmente usa la por defecto.
+    """
+    headers = {"Authorization": f"Bearer {TMDB_BEARER}"}
+    
+    # Obtener todas las imágenes disponibles
+    images_url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/images"
+    images_r = requests.get(images_url, headers=headers)
+    
+    if images_r.status_code != 200:
+        # Si falla, usar la portada por defecto
+        detail_url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}"
+        detail_r = requests.get(detail_url, headers=headers, params={"language": language})
+        if detail_r.status_code == 200:
+            detail = detail_r.json()
+            if detail.get("poster_path"):
+                return f"https://image.tmdb.org/t/p/w500{detail['poster_path']}"
+        return ""
+    
+    images_data = images_r.json()
+    posters = images_data.get("posters", [])
+    
+    if not posters:
+        return ""
+    
+    # Extraer el código de idioma base (ej: "es" de "es-ES")
+    lang_code = language.split("-")[0] if language else "en"
+    
+    # Buscar portadas en el idioma específico primero
+    lang_posters = [p for p in posters if p.get("iso_639_1") == lang_code]
+    if lang_posters:
+        # Ordenar por vote_average y tomar la mejor
+        best_poster = max(lang_posters, key=lambda x: x.get("vote_average", 0))
+        return f"https://image.tmdb.org/t/p/w500{best_poster['file_path']}"
+    
+    # Si no hay en el idioma solicitado, buscar en inglés
+    en_posters = [p for p in posters if p.get("iso_639_1") == "en"]
+    if en_posters:
+        best_poster = max(en_posters, key=lambda x: x.get("vote_average", 0))
+        return f"https://image.tmdb.org/t/p/w500{best_poster['file_path']}"
+    
+    # Si no hay en inglés, usar la mejor portada sin idioma específico (null)
+    null_posters = [p for p in posters if p.get("iso_639_1") is None]
+    if null_posters:
+        best_poster = max(null_posters, key=lambda x: x.get("vote_average", 0))
+        return f"https://image.tmdb.org/t/p/w500{best_poster['file_path']}"
+    
+    # Como último recurso, usar cualquier portada disponible
+    if posters:
+        best_poster = max(posters, key=lambda x: x.get("vote_average", 0))
+        return f"https://image.tmdb.org/t/p/w500{best_poster['file_path']}"
+    
+    return ""
+
 @app.get("/search", response_model=List[schemas.Media])
 def search_medias(q: str = Query(..., description="Búsqueda por título, actor o director"), db: Session = Depends(get_db)):
     def normalize_str(s):
@@ -371,7 +427,8 @@ def get_tmdb_info(
     tipo_preferido: str = Query(None, description="Priorizar 'película' o 'serie' si se desea"),
     listar: bool = Query(False, description="Si True, devuelve todas las coincidencias en vez de solo una"),
     id: int = Query(None, description="ID TMDb exacto"),
-    media_type: str = Query(None, description="'movie' o 'tv' si se busca por id")
+    media_type: str = Query(None, description="'movie' o 'tv' si se busca por id"),
+    language: str = Query("es-ES", description="Idioma para la consulta TMDb (ej: 'es-ES', 'en-US')")
 ):
     headers = {"Authorization": f"Bearer {TMDB_BEARER}"}
     # Si se pasa id y media_type, buscar detalle exacto
@@ -380,7 +437,7 @@ def get_tmdb_info(
         if tipo == "película":
             detail_url = f"{TMDB_BASE_URL}/movie/{id}"
             credits_url = f"{TMDB_BASE_URL}/movie/{id}/credits"
-            detail_params = {"language": "es-ES"}
+            detail_params = {"language": language}
             detail_r = requests.get(detail_url, headers=headers, params=detail_params)
             if detail_r.status_code != 200:
                 raise HTTPException(status_code=502, detail="Error al obtener detalles de TMDb")
@@ -394,15 +451,15 @@ def get_tmdb_info(
                 director = ", ".join(director_list)
                 elenco_list = [a["name"] for a in credits.get("cast", [])[:5]]
                 elenco = ", ".join(elenco_list)
-            # Obtener tráiler de YouTube (primero en español, luego en inglés si no hay)
+            # Obtener tráiler de YouTube (primero en el idioma solicitado, luego en inglés si no hay)
             trailer_url = None
             videos_url = f"{TMDB_BASE_URL}/movie/{id}/videos"
-            videos_r = requests.get(videos_url, headers=headers, params={"language": "es-ES"})
+            videos_r = requests.get(videos_url, headers=headers, params={"language": language})
             videos = []
             if videos_r.status_code == 200:
                 videos = videos_r.json().get("results", [])
             yt_trailers = [v for v in videos if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
-            if not yt_trailers:
+            if not yt_trailers and language != "en-US":
                 videos_r_en = requests.get(videos_url, headers=headers, params={"language": "en-US"})
                 if videos_r_en.status_code == 200:
                     videos_en = videos_r_en.json().get("results", [])
@@ -418,7 +475,7 @@ def get_tmdb_info(
                 "sinopsis": detail.get("overview", ""),
                 "director": director,
                 "elenco": elenco,
-                "imagen": f"https://image.tmdb.org/t/p/w500{detail['poster_path']}" if detail.get("poster_path") else "",
+                "imagen": get_best_poster(id, "movie", language),
                 "estado": detail.get("status", ""),
                 "tipo": tipo,
                 "temporadas": None,
@@ -433,7 +490,7 @@ def get_tmdb_info(
         else:
             detail_url = f"{TMDB_BASE_URL}/tv/{id}"
             credits_url = f"{TMDB_BASE_URL}/tv/{id}/credits"
-            detail_params = {"language": "es-ES"}
+            detail_params = {"language": language}
             detail_r = requests.get(detail_url, headers=headers, params=detail_params)
             if detail_r.status_code != 200:
                 raise HTTPException(status_code=502, detail="Error al obtener detalles de TMDb")
@@ -453,7 +510,7 @@ def get_tmdb_info(
                     continue
                 season_number = season["season_number"]
                 season_url = f"{TMDB_BASE_URL}/tv/{id}/season/{season_number}"
-                season_r = requests.get(season_url, headers=headers, params={"language": "es-ES"})
+                season_r = requests.get(season_url, headers=headers, params={"language": language})
                 if season_r.status_code != 200:
                     continue
                 season_data = season_r.json()
@@ -472,15 +529,15 @@ def get_tmdb_info(
                     "episodios": episodios
                 })
                 time.sleep(0.15)
-            # Obtener tráiler de YouTube para series (primero en español, luego en inglés si no hay)
+            # Obtener tráiler de YouTube para series (primero en el idioma solicitado, luego en inglés si no hay)
             trailer_url = None
             videos_url = f"{TMDB_BASE_URL}/tv/{id}/videos"
-            videos_r = requests.get(videos_url, headers=headers, params={"language": "es-ES"})
+            videos_r = requests.get(videos_url, headers=headers, params={"language": language})
             videos = []
             if videos_r.status_code == 200:
                 videos = videos_r.json().get("results", [])
             yt_trailers = [v for v in videos if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
-            if not yt_trailers:
+            if not yt_trailers and language != "en-US":
                 videos_r_en = requests.get(videos_url, headers=headers, params={"language": "en-US"})
                 if videos_r_en.status_code == 200:
                     videos_en = videos_r_en.json().get("results", [])
@@ -496,7 +553,7 @@ def get_tmdb_info(
                 "sinopsis": detail.get("overview", ""),
                 "director": director,
                 "elenco": elenco,
-                "imagen": f"https://image.tmdb.org/t/p/w500{detail['poster_path']}" if detail.get("poster_path") else "",
+                "imagen": get_best_poster(id, "tv", language),
                 "estado": detail.get("status", ""),
                 "tipo": tipo,
                 "temporadas": detail.get("number_of_seasons"),
@@ -510,7 +567,7 @@ def get_tmdb_info(
     # Si listar=True, devolver lista resumida de opciones
     if listar:
         search_url = f"{TMDB_BASE_URL}/search/multi"
-        params = {"query": title, "language": "es-ES", "include_adult": "false"}
+        params = {"query": title, "language": language, "include_adult": "false"}
         r = requests.get(search_url, headers=headers, params=params)
         if r.status_code != 200:
             raise HTTPException(status_code=502, detail="Error al conectar con TMDb")
@@ -521,12 +578,13 @@ def get_tmdb_info(
         for res in data["results"]:
             if res["media_type"] not in ("movie", "tv"):
                 continue
+            media_type = res["media_type"]
             opciones.append({
                 "id": res["id"],
-                "media_type": res["media_type"],
+                "media_type": media_type,
                 "titulo": res.get("title") or res.get("name", ""),
                 "anio": (res.get("release_date") or res.get("first_air_date") or "")[:4],
-                "imagen": f"https://image.tmdb.org/t/p/w200{res['poster_path']}" if res.get("poster_path") else "",
+                "imagen": get_best_poster(res["id"], media_type, language),
                 "nota_tmdb": res.get("vote_average"),
                 "votos_tmdb": res.get("vote_count")
             })
@@ -535,7 +593,7 @@ def get_tmdb_info(
     item = None
     if tipo_preferido:
         search_url = f"{TMDB_BASE_URL}/search/multi"
-        params = {"query": title, "language": "es-ES", "include_adult": "false"}
+        params = {"query": title, "language": language, "include_adult": "false"}
         r = requests.get(search_url, headers=headers, params=params)
         if r.status_code != 200:
             raise HTTPException(status_code=502, detail="Error al conectar con TMDb")
@@ -551,7 +609,7 @@ def get_tmdb_info(
                 break
     if not item:
         search_url = f"{TMDB_BASE_URL}/search/multi"
-        params = {"query": title, "language": "es-ES", "include_adult": "false"}
+        params = {"query": title, "language": language, "include_adult": "false"}
         r = requests.get(search_url, headers=headers, params=params)
         if r.status_code != 200:
             raise HTTPException(status_code=502, detail="Error al conectar con TMDb")
@@ -564,7 +622,7 @@ def get_tmdb_info(
     if tipo == "película":
         detail_url = f"{TMDB_BASE_URL}/movie/{item['id']}"
         credits_url = f"{TMDB_BASE_URL}/movie/{item['id']}/credits"
-        detail_params = {"language": "es-ES"}
+        detail_params = {"language": language}
         detail_r = requests.get(detail_url, headers=headers, params=detail_params)
         if detail_r.status_code != 200:
             raise HTTPException(status_code=502, detail="Error al obtener detalles de TMDb")
@@ -587,7 +645,7 @@ def get_tmdb_info(
             "sinopsis": detail.get("overview", ""),
             "director": director,
             "elenco": elenco,
-            "imagen": f"https://image.tmdb.org/t/p/w500{detail['poster_path']}" if detail.get("poster_path") else "",
+            "imagen": get_best_poster(item['id'], "movie", language),
             "estado": detail.get("status", ""),
             "tipo": tipo,
             "temporadas": None,
@@ -601,7 +659,7 @@ def get_tmdb_info(
     else:
         detail_url = f"{TMDB_BASE_URL}/tv/{item['id']}"
         credits_url = f"{TMDB_BASE_URL}/tv/{item['id']}/credits"
-        detail_params = {"language": "es-ES"}
+        detail_params = {"language": language}
         detail_r = requests.get(detail_url, headers=headers, params=detail_params)
         if detail_r.status_code != 200:
             raise HTTPException(status_code=502, detail="Error al obtener detalles de TMDb")
@@ -622,7 +680,7 @@ def get_tmdb_info(
                 continue
             season_number = season["season_number"]
             season_url = f"{TMDB_BASE_URL}/tv/{item['id']}/season/{season_number}"
-            season_r = requests.get(season_url, headers=headers, params={"language": "es-ES"})
+            season_r = requests.get(season_url, headers=headers, params={"language": language})
             if season_r.status_code != 200:
                 continue  # saltar temporadas sin info
             season_data = season_r.json()
@@ -650,7 +708,7 @@ def get_tmdb_info(
             "sinopsis": detail.get("overview", ""),
             "director": director,
             "elenco": elenco,
-            "imagen": f"https://image.tmdb.org/t/p/w500{detail['poster_path']}" if detail.get("poster_path") else "",
+            "imagen": get_best_poster(item['id'], "tv", language),
             "estado": detail.get("status", ""),
             "tipo": tipo,
             "temporadas": detail.get("number_of_seasons"),
