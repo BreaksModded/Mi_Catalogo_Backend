@@ -866,6 +866,24 @@ def clear_translation_cache(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error clearing cache: {str(e)}")
 
+@app.get("/poster/{tmdb_id}")
+def get_dynamic_poster(
+    tmdb_id: int,
+    media_type: str = Query(..., description="movie o tv"),
+    language: str = Query("es-ES", description="Idioma para la portada (ej: es-ES, en-US)")
+):
+    """
+    Obtiene la mejor portada para un contenido específico en el idioma solicitado.
+    """
+    try:
+        poster_url = get_best_poster(tmdb_id, media_type, language)
+        if poster_url:
+            return {"poster_url": poster_url}
+        else:
+            raise HTTPException(status_code=404, detail="No poster found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting poster: {str(e)}")
+
 # --- Al final del archivo: servir frontend React para rutas no API ---
 @app.get("/", include_in_schema=False)
 @app.get("/{full_path:path}", include_in_schema=False)

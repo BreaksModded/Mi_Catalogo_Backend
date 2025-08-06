@@ -41,7 +41,10 @@ Frontend (React) ──→ Backend (FastAPI) ──→ Supabase (PostgreSQL)
 - `GET /translations/cache/stats` - Estadísticas del caché
 - `DELETE /translations/cache/clear` - Limpiar caché
 
-### 📝 Listas y Tags
+### �️ Portadas Dinámicas ⭐ **NUEVO**
+- `GET /poster/{tmdb_id}?media_type=movie&language=es-ES` - Obtener mejor portada por idioma
+
+### �📝 Listas y Tags
 - `GET /listas` - Obtener listas personalizadas
 - `POST /listas` - Crear nueva lista
 - `GET /tags` - Obtener tags disponibles
@@ -92,6 +95,30 @@ GET /tmdb?id=550&media_type=movie&language=en-US
   "idioma_original": "en"
 }
 ```
+
+### 🖼️ Endpoint de Portadas Dinámicas ⭐ **NUEVO**
+
+```http
+GET /poster/{tmdb_id}?media_type=movie&language=es-ES
+```
+
+**Parámetros:**
+- `tmdb_id`: ID de TMDb del contenido
+- `media_type`: "movie" o "tv" 
+- `language`: Código de idioma (es-ES, en-US)
+
+**Respuesta:**
+```json
+{
+  "poster_url": "https://image.tmdb.org/t/p/w500/poster_best_for_language.jpg"
+}
+```
+
+**Lógica de selección:**
+1. Busca portadas con texto en el idioma solicitado
+2. Si no encuentra, busca portadas en inglés
+3. Si no hay específicas, usa portadas sin idioma
+4. Como último recurso, usa cualquier portada disponible
 
 ## 🌐 Sistema de Traducciones
 
