@@ -909,28 +909,20 @@ def get_dynamic_poster(
                     
                     # Guardar en la base de datos
                     if lang_code == "en":
-                        # Buscar o crear translation para inglés
+                        # Solo actualizar si ya existe una translation (no crear fila nueva)
                         translation = db.query(models.ContentTranslation).filter(
                             models.ContentTranslation.media_id == media.id,
                             models.ContentTranslation.language_code == "en-US"
                         ).first()
                         
-                        if not translation:
-                            translation = models.ContentTranslation(
-                                media_id=media.id,
-                                language_code="en-US",
-                                poster_url=poster_url
-                            )
-                            db.add(translation)
-                        else:
-                            if hasattr(translation, 'poster_url'):
-                                translation.poster_url = poster_url
+                        if translation and hasattr(translation, 'poster_url'):
+                            translation.poster_url = poster_url
                             translation.updated_at = func.now()
+                            db.commit()
                     else:
                         # Actualizar imagen en tabla media para español
                         media.imagen = poster_url
-                    
-                    db.commit()
+                        db.commit()
             
             # Fallback a imagen original si no se encontró nada
             if not poster_url:
@@ -979,18 +971,18 @@ def get_optimized_posters(
         for media in medias:
             poster_url = None
 
-            # Español: usar imagen de la tabla media si existe y no está vacía
-            if lang_code == "es" and media.imagen and str(media.imagen).strip() != "":
-                poster_url = media.imagen
-
-            # Inglés: buscar en content_translations si existe y no está vacía
-            if not poster_url and lang_code == "en":
+            # Primero: buscar en content_translations para el idioma solicitado
+            if lang_code == "en":
                 translation = db.query(models.ContentTranslation).filter(
                     models.ContentTranslation.media_id == media.id,
                     models.ContentTranslation.language_code == "en-US"
                 ).first()
                 if translation and getattr(translation, 'poster_url', None) and str(translation.poster_url).strip() != "":
                     poster_url = translation.poster_url
+
+            # Si no se encontró en translations y es español, usar imagen de la tabla media
+            if not poster_url and lang_code == "es" and media.imagen and str(media.imagen).strip() != "":
+                poster_url = media.imagen
 
             # Si no hay poster en la BD, hacer llamada a TMDb y guardar SOLO si no existe ya o está vacío
             if (not poster_url or str(poster_url).strip() == "") and media.tmdb_id:
@@ -999,20 +991,12 @@ def get_optimized_posters(
                     if tmdb_poster:
                         poster_url = tmdb_poster
                         if lang_code == "en":
-                            # Guardar solo si no existe translation o poster_url vacío
+                            # Solo actualizar si ya existe una traducción (no crear fila nueva)
                             translation = db.query(models.ContentTranslation).filter(
                                 models.ContentTranslation.media_id == media.id,
                                 models.ContentTranslation.language_code == "en-US"
                             ).first()
-                            if not translation:
-                                translation = models.ContentTranslation(
-                                    media_id=media.id,
-                                    language_code="en-US",
-                                    poster_url=poster_url
-                                )
-                                db.add(translation)
-                                db.commit()
-                            elif not getattr(translation, 'poster_url', None) or str(translation.poster_url).strip() == "":
+                            if translation and (not getattr(translation, 'poster_url', None) or str(translation.poster_url).strip() == ""):
                                 translation.poster_url = poster_url
                                 translation.updated_at = func.now()
                                 db.commit()
