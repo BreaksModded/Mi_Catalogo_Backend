@@ -2,7 +2,7 @@ import models
 import database
 import crud
 import schemas
-from translation_service import TranslationService
+from translation_service import TranslationService, get_translation_service
 from poster_cache import (
     get_poster_cache, 
     set_poster_cache, 

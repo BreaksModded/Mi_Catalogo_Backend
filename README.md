@@ -7,18 +7,20 @@ Backend API para la aplicación de gestión de películas y series con sistema d
 - **🎯 API RESTful** - FastAPI con documentación automática
 - **🌐 Sistema de traducciones** - Caché inteligente con TMDb API
 - **🖼️ Portadas dinámicas** - Imágenes que cambian según el idioma seleccionado
-- **🗄️ Base de datos** - PostgreSQL en Supabase
+- **⚡ Cache híbrido** - Redis + memoria para máximo rendimiento ⭐ **NUEVO**
+- **🗄️ Base de datos** - PostgreSQL optimizada con índices especializados ⭐ **NUEVO**
 - **📊 Gestión completa** - Películas, series, listas, tags y favoritos
 - **🔍 Búsqueda avanzada** - Por título, director, actor y género
-- **⚡ Optimizado** - Cache en memoria y base de datos
+- **🎨 Skeleton loading** - UX suave con componentes de carga ⭐ **NUEVO**
 
 ## 🏗️ Arquitectura
 
 ```
 Frontend (React) ──→ Backend (FastAPI) ──→ Supabase (PostgreSQL)
-                            │
+                            │                      ↗ Índices optimizados
                             ├──→ TMDb API (traducciones)
-                            └──→ Cache (memoria + BD)
+                            ├──→ Redis Cache (optional) ⭐ **NUEVO**
+                            └──→ Memory Cache (fallback) ⭐ **NUEVO**
 ```
 
 ## 📋 Endpoints Principales
@@ -41,8 +43,17 @@ Frontend (React) ──→ Backend (FastAPI) ──→ Supabase (PostgreSQL)
 - `GET /translations/cache/stats` - Estadísticas del caché
 - `DELETE /translations/cache/clear` - Limpiar caché
 
-### �️ Portadas Dinámicas ⭐ **NUEVO**
-- `GET /poster/{tmdb_id}?media_type=movie&language=es-ES` - Obtener mejor portada por idioma
+### 🖼️ Portadas Optimizadas ⭐ **NUEVO**
+- `GET /poster/{tmdb_id}?media_type=movie&language=es-ES` - Portada optimizada por idioma
+- `GET /posters-optimized` - Endpoint batch para múltiples portadas
+- **Cache híbrido**: Redis + memoria con TTL configurable
+- **Índices DB**: Consultas ultra-rápidas por (tmdb_id, tipo) y (media_id, language_code)
+
+### 🚀 Gestión de Cache ⭐ **NUEVO**
+- `GET /cache/posters/stats` - Estadísticas detalladas del cache
+- `DELETE /cache/posters` - Limpiar cache (Redis + memoria)
+- **Fallback automático**: Redis → Memoria → Base de datos
+- **Batch operations**: Carga eficiente de múltiples elementos
 
 ### �📝 Listas y Tags
 - `GET /listas` - Obtener listas personalizadas
@@ -149,7 +160,8 @@ graph TD
 ## 🛠️ Tecnologías
 
 - **Framework**: FastAPI 0.115+
-- **Base de datos**: PostgreSQL (Supabase)
+- **Base de datos**: PostgreSQL (Supabase) con índices optimizados ⭐ **NUEVO**
+- **Cache**: Redis (opcional) + memoria (fallback) ⭐ **NUEVO**
 - **ORM**: SQLAlchemy 2.0+
 - **Validación**: Pydantic 2.0+
 - **HTTP Client**: Requests
@@ -164,9 +176,11 @@ backend/
 ├── models.py              # 🗄️ Modelos SQLAlchemy
 ├── schemas.py             # 📋 Esquemas Pydantic
 ├── crud.py                # 🔧 Operaciones CRUD
-├── database.py            # 🔌 Configuración de BD
+├── database.py            # 🔌 Configuración de BD + índices optimizados ⭐ **NUEVO**
+├── poster_cache.py        # 🚀 Sistema de cache híbrido Redis + memoria ⭐ **NUEVO**
 ├── translation_service.py # 🌐 Servicio de traducciones
-├── requirements.txt       # 📦 Dependencias
+├── requirements.txt       # 📦 Dependencias (incluye Redis) ⭐ **NUEVO**
+├── install_redis.sh       # 🛠️ Script de instalación Redis ⭐ **NUEVO**
 └── .env                   # 🔑 Variables de entorno
 ```
 
@@ -177,6 +191,7 @@ backend/
 ```env
 DATABASE_URL=postgresql://user:password@host:port/database
 TMDB_API_KEY=tu_api_key_de_tmdb
+REDIS_URL=redis://localhost:6379  # Opcional para cache Redis ⭐ **NUEVO**
 ```
 
 ### 📦 Instalación
@@ -184,6 +199,10 @@ TMDB_API_KEY=tu_api_key_de_tmdb
 ```bash
 # Instalar dependencias
 pip install -r requirements.txt
+
+# Opcional: Instalar y configurar Redis para máximo rendimiento
+chmod +x install_redis.sh
+./install_redis.sh
 
 # Ejecutar servidor de desarrollo
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -286,9 +305,20 @@ logging.error(f"TMDb API error: {error}")
 - **Tiempo de respuesta**: <200ms con cache
 - **TMDb requests**: Solo para contenido nuevo
 - **Portadas dinámicas**: <500ms selección inteligente
-- **Base de datos**: Conexiones pooled con SSL
+- **Base de datos**: Conexiones pooled con SSL + índices optimizados ⭐ **NUEVO**
+- **Redis cache**: <50ms para datos cached ⭐ **NUEVO**
+- **Fallback sistema**: 0ms switching entre cache layers ⭐ **NUEVO**
 
 ## 🔄 Últimas Actualizaciones
+
+### v2.2.0 - Sistema de Cache Híbrido y Optimización DB ⭐ **NUEVO** (Enero 2025)
+- ✅ **Cache híbrido Redis + memoria** con fallback automático
+- ✅ **Índices especializados** en BD para consultas ultrarrápidas
+- ✅ **Endpoints batch optimizados** (/posters-optimized)
+- ✅ **Gestión avanzada de cache** (stats, clear, TTL)
+- ✅ **Script de instalación Redis** para setup simplificado
+- ✅ **Sistema de fallback robusto** para máxima disponibilidad
+- ✅ **Optimización de consultas** con batch operations
 
 ### v2.1.0 - Portadas Dinámicas y Multi-idioma (Enero 2025)
 - ✅ **Sistema de portadas dinámicas** por idioma
