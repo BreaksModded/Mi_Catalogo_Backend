@@ -74,11 +74,48 @@ def remove_translated_description_column():
     except Exception as e:
         print(f"Error eliminando columna translated_description: {e}")
 
+def optimize_poster_indexes():
+    """Crear índices optimizados para consultas de portadas"""
+    try:
+        with engine.connect() as conn:
+            # Índice compuesto para media (tmdb_id, tipo) - mejora consultas individuales
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_tmdb_tipo 
+                ON media (tmdb_id, tipo) 
+                WHERE tmdb_id IS NOT NULL
+            """))
+            
+            # Índice compuesto para content_translations (media_id, language_code) - mejora consultas batch
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_content_translations_media_lang 
+                ON content_translations (media_id, language_code)
+            """))
+            
+            # Índice para poster_url no nulo en content_translations
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_content_translations_poster_url 
+                ON content_translations (media_id, language_code, poster_url) 
+                WHERE poster_url IS NOT NULL AND poster_url != ''
+            """))
+            
+            # Índice para imagen no nula en media
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_imagen 
+                ON media (id, imagen) 
+                WHERE imagen IS NOT NULL AND imagen != ''
+            """))
+            
+            conn.commit()
+            
+    except Exception as e:
+        pass  # Continúa silenciosamente si hay errores de índices
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     # Ejecutar migraciones necesarias
     check_and_add_poster_column()
     remove_translated_description_column()
+    optimize_poster_indexes()
 
 def get_db():
     db = SessionLocal()

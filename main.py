@@ -2,7 +2,16 @@ import models
 import database
 import crud
 import schemas
-from translation_service import get_translation_service
+from translation_service import TranslationService
+from poster_cache import (
+    get_poster_cache, 
+    set_poster_cache, 
+    get_batch_poster_cache, 
+    set_batch_poster_cache,
+    get_cache_key,
+    get_cache_stats,
+    clear_poster_cache
+)
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, Body, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -875,30 +884,42 @@ def get_dynamic_poster(
 ):
     """
     Obtiene la mejor portada para un contenido específico en el idioma solicitado.
-    Busca primero en la base de datos, luego en TMDb si no existe.
+    Busca primero en cache, luego en la base de datos, luego en TMDb si no existe.
     """
     try:
         # Convertir language a formato simple (es o en)
         lang_code = "es" if language.startswith("es") else "en"
         
-        # Buscar el media en la base de datos por tmdb_id
-        media = db.query(models.Media).filter(models.Media.tmdb_id == tmdb_id).first()
+        # Generar clave de cache
+        cache_key = get_cache_key(None, lang_code, tmdb_id)
+        
+        # Verificar cache primero
+        cached_poster = get_poster_cache(cache_key)
+        if cached_poster:
+            return {"poster_url": cached_poster}
+        
+        # Buscar el media en la base de datos por tmdb_id usando índice optimizado
+        media = db.query(models.Media).filter(
+            models.Media.tmdb_id == tmdb_id
+        ).first()
         
         if media:
             poster_url = None
             
-            # Si el idioma es español, usar la imagen de la tabla media
+            # Query optimizada: buscar español e inglés en una sola consulta
             if lang_code == "es" and media.imagen:
                 poster_url = media.imagen
             
-            # Si el idioma es inglés, buscar en content_translations
+            # Si el idioma es inglés, buscar en content_translations con índice optimizado
             if not poster_url and lang_code == "en":
                 translation = db.query(models.ContentTranslation).filter(
                     models.ContentTranslation.media_id == media.id,
-                    models.ContentTranslation.language_code == "en-US"
+                    models.ContentTranslation.language_code == "en-US",
+                    models.ContentTranslation.poster_url.isnot(None),
+                    models.ContentTranslation.poster_url != ""
                 ).first()
                 
-                if translation and hasattr(translation, 'poster_url') and translation.poster_url:
+                if translation:
                     poster_url = translation.poster_url
             
             # Si no hay poster en la BD, hacer llamada a TMDb y guardar
@@ -921,8 +942,9 @@ def get_dynamic_poster(
                             db.commit()
                     else:
                         # Actualizar imagen en tabla media para español
-                        media.imagen = poster_url
-                        db.commit()
+                        if not media.imagen or media.imagen.strip() == "":
+                            media.imagen = poster_url
+                            db.commit()
             
             # Fallback a imagen original si no se encontró nada
             if not poster_url:
@@ -931,7 +953,9 @@ def get_dynamic_poster(
             # Si no existe en la BD, solo hacer llamada a TMDb
             poster_url = get_best_poster(tmdb_id, media_type, language)
         
+        # Guardar en cache si encontramos algo
         if poster_url:
+            set_poster_cache(cache_key, poster_url)
             return {"poster_url": poster_url}
         else:
             raise HTTPException(status_code=404, detail="No poster found")
@@ -945,8 +969,8 @@ def get_optimized_posters(
     db: Session = Depends(get_db)
 ):
     """
-    Obtiene las URLs de los posters desde la base de datos primero.
-    Si no existen en la BD, hace llamada a TMDb y guarda el resultado.
+    Obtiene las URLs de los posters desde cache primero, luego BD, luego TMDb.
+    Versión optimizada con batch queries y cache inteligente.
     """
     try:
         ids = [int(id.strip()) for id in media_ids.split(",") if id.strip().isdigit()]
@@ -964,59 +988,126 @@ def get_optimized_posters(
             lang_db = "es-ES"
             tmdb_lang = "es-ES"
 
-        medias = db.query(models.Media).filter(models.Media.id.in_(ids)).all()
+        # Generar claves de cache para todos los medias
+        cache_keys = {media_id: get_cache_key(media_id, lang_code) for media_id in ids}
+        
+        # Verificar cache batch
+        cached_posters = get_batch_poster_cache(list(cache_keys.values()))
+        
+        # Filtrar IDs que no están en cache
+        ids_to_fetch = []
         result = {}
+        
+        for media_id in ids:
+            cache_key = cache_keys[media_id]
+            cached_value = cached_posters.get(cache_key)
+            if cached_value:
+                result[str(media_id)] = cached_value
+            else:
+                ids_to_fetch.append(media_id)
 
-
-        for media in medias:
-            poster_url = None
-
-            # Primero: buscar en content_translations para el idioma solicitado
+        # Solo hacer query de BD para los que no están en cache
+        if ids_to_fetch:
+            # Query optimizada: una sola consulta para todos los medias
+            medias = db.query(models.Media).filter(models.Media.id.in_(ids_to_fetch)).all()
+            
+            # Query optimizada: una sola consulta para todas las traducciones si es inglés
+            translations_map = {}
             if lang_code == "en":
-                translation = db.query(models.ContentTranslation).filter(
-                    models.ContentTranslation.media_id == media.id,
-                    models.ContentTranslation.language_code == "en-US"
-                ).first()
-                if translation and getattr(translation, 'poster_url', None) and str(translation.poster_url).strip() != "":
-                    poster_url = translation.poster_url
+                translations = db.query(models.ContentTranslation).filter(
+                    models.ContentTranslation.media_id.in_(ids_to_fetch),
+                    models.ContentTranslation.language_code == "en-US",
+                    models.ContentTranslation.poster_url.isnot(None),
+                    models.ContentTranslation.poster_url != ""
+                ).all()
+                translations_map = {t.media_id: t.poster_url for t in translations}
 
-            # Si no se encontró en translations y es español, usar imagen de la tabla media
-            if not poster_url and lang_code == "es" and media.imagen and str(media.imagen).strip() != "":
-                poster_url = media.imagen
+            # Procesar cada media
+            new_cache_data = {}
+            tmdb_requests = []  # Para llamadas batch a TMDb
+            
+            for media in medias:
+                poster_url = None
 
-            # Si no hay poster en la BD, hacer llamada a TMDb y guardar SOLO si no existe ya o está vacío
-            if (not poster_url or str(poster_url).strip() == "") and media.tmdb_id:
+                # Lógica optimizada de búsqueda
+                if lang_code == "en":
+                    poster_url = translations_map.get(media.id)
+                elif lang_code == "es" and media.imagen and str(media.imagen).strip() != "":
+                    poster_url = media.imagen
+
+                # Si no hay poster en la BD, preparar para TMDb
+                if (not poster_url or str(poster_url).strip() == "") and media.tmdb_id:
+                    tmdb_requests.append((media.id, media.tmdb_id, media.tipo))
+                else:
+                    # Tenemos poster, agregarlo al resultado y cache
+                    if not poster_url:
+                        poster_url = media.imagen  # Fallback
+                    
+                    result[str(media.id)] = poster_url
+                    new_cache_data[cache_keys[media.id]] = poster_url
+
+            # Procesar llamadas a TMDb (podrían optimizarse con async en el futuro)
+            for media_id, tmdb_id, tipo in tmdb_requests:
                 try:
-                    tmdb_poster = get_best_poster(media.tmdb_id, media.tipo, tmdb_lang)
+                    tmdb_poster = get_best_poster(tmdb_id, tipo, tmdb_lang)
                     if tmdb_poster:
                         poster_url = tmdb_poster
+                        
+                        # Guardar en BD según idioma
                         if lang_code == "en":
-                            # Solo actualizar si ya existe una traducción (no crear fila nueva)
+                            # Solo actualizar si ya existe una traducción
                             translation = db.query(models.ContentTranslation).filter(
-                                models.ContentTranslation.media_id == media.id,
+                                models.ContentTranslation.media_id == media_id,
                                 models.ContentTranslation.language_code == "en-US"
                             ).first()
                             if translation and (not getattr(translation, 'poster_url', None) or str(translation.poster_url).strip() == ""):
                                 translation.poster_url = poster_url
                                 translation.updated_at = func.now()
-                                db.commit()
                         else:
-                            # Guardar solo si no existe imagen en media o está vacía
-                            if not media.imagen or str(media.imagen).strip() == "":
+                            # Actualizar solo si no existe imagen en media o está vacía
+                            media = next((m for m in medias if m.id == media_id), None)
+                            if media and (not media.imagen or str(media.imagen).strip() == ""):
                                 media.imagen = poster_url
-                                db.commit()
+                    else:
+                        # No se encontró en TMDb, usar imagen original
+                        media = next((m for m in medias if m.id == media_id), None)
+                        poster_url = media.imagen if media else ""
+                    
+                    result[str(media_id)] = poster_url or ""
+                    new_cache_data[cache_keys[media_id]] = poster_url or ""
+                    
                 except Exception as e:
-                    pass  # Continúa silenciosamente si hay error con TMDb
+                    # Error con TMDb, usar fallback
+                    media = next((m for m in medias if m.id == media_id), None)
+                    fallback_poster = media.imagen if media else ""
+                    result[str(media_id)] = fallback_poster
+                    new_cache_data[cache_keys[media_id]] = fallback_poster
 
-            # Fallback a la imagen original si no se encontró nada
-            if not poster_url or str(poster_url).strip() == "":
-                poster_url = media.imagen
-
-            result[str(media.id)] = poster_url
+            # Commit de cambios en BD y actualizar cache batch
+            if tmdb_requests:
+                db.commit()
+            
+            if new_cache_data:
+                set_batch_poster_cache(new_cache_data)
 
         return {"posters": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting optimized posters: {str(e)}")
+
+# Endpoints de gestión de cache
+@app.get("/cache/posters/stats")
+def get_poster_cache_stats():
+    """Obtener estadísticas del cache de portadas"""
+    return get_cache_stats()
+
+@app.delete("/cache/posters")
+def clear_poster_cache_endpoint():
+    """Limpiar todo el cache de portadas"""
+    result = clear_poster_cache()
+    return {
+        "message": f"Cache cleared successfully. {result['cleared']} entries removed.",
+        "stats": result["cache_stats"]
+    }
 
 # --- Al final del archivo: servir frontend React para rutas no API ---
 @app.get("/", include_in_schema=False)
