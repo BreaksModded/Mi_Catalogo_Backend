@@ -870,13 +870,75 @@ def clear_translation_cache(
 def get_dynamic_poster(
     tmdb_id: int,
     media_type: str = Query(..., description="movie o tv"),
-    language: str = Query("es-ES", description="Idioma para la portada (ej: es-ES, en-US)")
+    language: str = Query("es-ES", description="Idioma para la portada (ej: es-ES, en-US)"),
+    db: Session = Depends(get_db)
 ):
     """
     Obtiene la mejor portada para un contenido específico en el idioma solicitado.
+    Busca primero en la base de datos, luego en TMDb si no existe.
     """
     try:
-        poster_url = get_best_poster(tmdb_id, media_type, language)
+        # Convertir language a formato simple (es o en)
+        lang_code = "es" if language.startswith("es") else "en"
+        
+        # Buscar el media en la base de datos por tmdb_id
+        media = db.query(models.Media).filter(models.Media.tmdb_id == tmdb_id).first()
+        
+        if media:
+            poster_url = None
+            
+            # Si el idioma es español, usar la imagen de la tabla media
+            if lang_code == "es" and media.imagen:
+                poster_url = media.imagen
+            
+            # Si el idioma es inglés, buscar en content_translations
+            if not poster_url and lang_code == "en":
+                translation = db.query(models.ContentTranslation).filter(
+                    models.ContentTranslation.media_id == media.id,
+                    models.ContentTranslation.language_code == "en-US"
+                ).first()
+                
+                if translation and hasattr(translation, 'poster_url') and translation.poster_url:
+                    poster_url = translation.poster_url
+            
+            # Si no hay poster en la BD, hacer llamada a TMDb y guardar
+            if not poster_url:
+                tmdb_poster = get_best_poster(tmdb_id, media_type, language)
+                if tmdb_poster:
+                    poster_url = tmdb_poster
+                    
+                    # Guardar en la base de datos
+                    if lang_code == "en":
+                        # Buscar o crear translation para inglés
+                        translation = db.query(models.ContentTranslation).filter(
+                            models.ContentTranslation.media_id == media.id,
+                            models.ContentTranslation.language_code == "en-US"
+                        ).first()
+                        
+                        if not translation:
+                            translation = models.ContentTranslation(
+                                media_id=media.id,
+                                language_code="en-US",
+                                poster_url=poster_url
+                            )
+                            db.add(translation)
+                        else:
+                            if hasattr(translation, 'poster_url'):
+                                translation.poster_url = poster_url
+                            translation.updated_at = func.now()
+                    else:
+                        # Actualizar imagen en tabla media para español
+                        media.imagen = poster_url
+                    
+                    db.commit()
+            
+            # Fallback a imagen original si no se encontró nada
+            if not poster_url:
+                poster_url = media.imagen
+        else:
+            # Si no existe en la BD, solo hacer llamada a TMDb
+            poster_url = get_best_poster(tmdb_id, media_type, language)
+        
         if poster_url:
             return {"poster_url": poster_url}
         else:
