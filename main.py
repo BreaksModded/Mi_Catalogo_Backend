@@ -948,10 +948,14 @@ def get_optimized_posters(
     Obtiene las URLs de los posters desde la base de datos primero.
     Si no existen en la BD, hace llamada a TMDb y guarda el resultado.
     """
+    print(f"🎯 /posters-optimized called with media_ids: {media_ids}, language: {language}")
     try:
         ids = [int(id.strip()) for id in media_ids.split(",") if id.strip().isdigit()]
         if not ids:
+            print("❌ No valid IDs provided")
             return {"posters": {}}
+
+        print(f"🔍 Processing {len(ids)} media IDs: {ids}")
 
         # Normalizar idioma
         lang = language.lower()
@@ -964,7 +968,10 @@ def get_optimized_posters(
             lang_db = "es-ES"
             tmdb_lang = "es-ES"
 
+        print(f"🌐 Language normalized: {lang_code} -> {lang_db}")
+
         medias = db.query(models.Media).filter(models.Media.id.in_(ids)).all()
+        print(f"📋 Found {len(medias)} medias in database")
         result = {}
 
 
@@ -1014,8 +1021,10 @@ def get_optimized_posters(
 
             result[str(media.id)] = poster_url
 
+        print(f"✅ Returning {len(result)} posters: {result}")
         return {"posters": result}
     except Exception as e:
+        print(f"❌ Error in get_optimized_posters: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error getting optimized posters: {str(e)}")
 
 # --- Al final del archivo: servir frontend React para rutas no API ---
