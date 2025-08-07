@@ -33,12 +33,15 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 
 origins = [
     "https://mi-catalogo-oguv.vercel.app",
-    "http://localhost:3000",  # para desarrollo local, si lo usas
+    "http://localhost:3000",  # para desarrollo local
+    "http://127.0.0.1:3000",  # otra forma de localhost
+    "http://192.168.0.25:3000",  # tu IP local específica para móvil
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"http://192\.168\.\d+\.\d+:3000",  # permitir cualquier IP 192.168.x.x:3000
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
