@@ -39,18 +39,14 @@ def check_and_add_poster_column():
             """))
             
             if not result.fetchone():
-                print("Añadiendo columna poster_url a content_translations...")
                 conn.execute(text("""
                     ALTER TABLE content_translations 
                     ADD COLUMN poster_url VARCHAR(500)
                 """))
                 conn.commit()
-                print("✅ Columna poster_url añadida exitosamente")
-            else:
-                print("✓ Columna poster_url ya existe en content_translations")
                 
     except Exception as e:
-        print(f"Error verificando/añadiendo columna poster_url: {e}")
+        pass  # Continúa silenciosamente
 
 def remove_translated_description_column():
     """Eliminar la columna translated_description duplicada de content_translations"""
