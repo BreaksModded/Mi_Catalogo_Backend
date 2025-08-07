@@ -82,7 +82,6 @@ class TranslationService:
             translation_data = {
                 "translated_title": data.get("title") or data.get("name"),
                 "translated_synopsis": data.get("overview"),
-                "translated_description": data.get("overview"),
                 "director": self._extract_director(data, endpoint),
                 "cast_members": self._extract_cast(data, endpoint),
                 "genres": self._extract_genres(data),
@@ -166,7 +165,6 @@ class TranslationService:
         return {
             "titulo": translation.translated_title,
             "sinopsis": translation.translated_synopsis,
-            "descripcion": translation.translated_description,
             "director": translation.director,
             "elenco": translation.cast_members,
             "genero": translation.genres,

@@ -52,10 +52,37 @@ def check_and_add_poster_column():
     except Exception as e:
         print(f"Error verificando/añadiendo columna poster_url: {e}")
 
+def remove_translated_description_column():
+    """Eliminar la columna translated_description duplicada de content_translations"""
+    try:
+        with engine.connect() as conn:
+            # Verificar si la columna existe
+            result = conn.execute(text("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'content_translations' 
+                AND column_name = 'translated_description'
+            """))
+            
+            if result.fetchone():
+                print("Eliminando columna duplicada translated_description de content_translations...")
+                conn.execute(text("""
+                    ALTER TABLE content_translations 
+                    DROP COLUMN translated_description
+                """))
+                conn.commit()
+                print("✅ Columna translated_description eliminada exitosamente")
+            else:
+                print("✓ Columna translated_description ya no existe en content_translations")
+                
+    except Exception as e:
+        print(f"Error eliminando columna translated_description: {e}")
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     # Ejecutar migraciones necesarias
     check_and_add_poster_column()
+    remove_translated_description_column()
 
 def get_db():
     db = SessionLocal()

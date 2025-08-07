@@ -87,7 +87,6 @@ class ContentTranslation(Base):
     language_code = Column(String(5), nullable=False)
     translated_title = Column(String(500))
     translated_synopsis = Column(String)
-    translated_description = Column(String)
     director = Column(String(300))
     cast_members = Column(String)
     genres = Column(String(300))
