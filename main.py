@@ -884,6 +884,88 @@ def get_dynamic_poster(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting poster: {str(e)}")
 
+@app.get("/posters-optimized")
+def get_optimized_posters(
+    media_ids: str = Query(..., description="Lista de IDs de media separados por comas"),
+    language: str = Query("es", description="Idioma preferido (es o en)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Obtiene las URLs de los posters desde la base de datos primero.
+    Si no existen en la BD, hace llamada a TMDb y guarda el resultado.
+    """
+    try:
+        ids = [int(id.strip()) for id in media_ids.split(",") if id.strip().isdigit()]
+        
+        if not ids:
+            return {"posters": {}}
+        
+        # Obtener medias de la base de datos
+        medias = db.query(models.Media).filter(models.Media.id.in_(ids)).all()
+        result = {}
+        
+        for media in medias:
+            poster_url = None
+            
+            # Si el idioma es español, usar la imagen de la tabla media
+            if language == "es" and media.imagen:
+                poster_url = media.imagen
+            
+            # Si el idioma es inglés o no hay imagen en español, buscar en content_translations
+            if not poster_url and language == "en":
+                translation = db.query(models.ContentTranslation).filter(
+                    models.ContentTranslation.media_id == media.id,
+                    models.ContentTranslation.language_code == "en-US"
+                ).first()
+                
+                if translation and hasattr(translation, 'poster_url') and translation.poster_url:
+                    poster_url = translation.poster_url
+            
+            # Si no hay poster en la BD, hacer llamada a TMDb
+            if not poster_url and media.tmdb_id:
+                try:
+                    tmdb_poster = get_best_poster(media.tmdb_id, media.tipo, f"{language}-US" if language == "en" else "es-ES")
+                    if tmdb_poster:
+                        poster_url = tmdb_poster
+                        
+                        # Guardar en la base de datos para futuras consultas
+                        if language == "en":
+                            # Buscar o crear translation para inglés
+                            translation = db.query(models.ContentTranslation).filter(
+                                models.ContentTranslation.media_id == media.id,
+                                models.ContentTranslation.language_code == "en-US"
+                            ).first()
+                            
+                            if not translation:
+                                translation = models.ContentTranslation(
+                                    media_id=media.id,
+                                    language_code="en-US",
+                                    poster_url=poster_url
+                                )
+                                db.add(translation)
+                            else:
+                                if hasattr(translation, 'poster_url'):
+                                    translation.poster_url = poster_url
+                                translation.updated_at = func.now()
+                        else:
+                            # Actualizar imagen en tabla media para español
+                            media.imagen = poster_url
+                        
+                        db.commit()
+                except Exception as e:
+                    print(f"Error obteniendo poster de TMDb para media {media.id}: {e}")
+            
+            # Fallback a la imagen original si no se encontró nada
+            if not poster_url:
+                poster_url = media.imagen
+            
+            result[str(media.id)] = poster_url
+        
+        return {"posters": result}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting optimized posters: {str(e)}")
+
 # --- Al final del archivo: servir frontend React para rutas no API ---
 @app.get("/", include_in_schema=False)
 @app.get("/{full_path:path}", include_in_schema=False)

@@ -91,6 +91,7 @@ class ContentTranslation(Base):
     director = Column(String(300))
     cast_members = Column(String)
     genres = Column(String(300))
+    poster_url = Column(String(500))  # URL del poster en este idioma
     translation_source = Column(String(20), default='tmdb')
     tmdb_id = Column(Integer)
     media_type = Column(String(10))

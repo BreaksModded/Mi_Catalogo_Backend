@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -26,8 +26,36 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+def check_and_add_poster_column():
+    """Verificar si existe la columna poster_url en content_translations y añadirla si no existe"""
+    try:
+        with engine.connect() as conn:
+            # Verificar si la columna ya existe
+            result = conn.execute(text("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'content_translations' 
+                AND column_name = 'poster_url'
+            """))
+            
+            if not result.fetchone():
+                print("Añadiendo columna poster_url a content_translations...")
+                conn.execute(text("""
+                    ALTER TABLE content_translations 
+                    ADD COLUMN poster_url VARCHAR(500)
+                """))
+                conn.commit()
+                print("✅ Columna poster_url añadida exitosamente")
+            else:
+                print("✓ Columna poster_url ya existe en content_translations")
+                
+    except Exception as e:
+        print(f"Error verificando/añadiendo columna poster_url: {e}")
+
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Ejecutar migraciones necesarias
+    check_and_add_poster_column()
 
 def get_db():
     db = SessionLocal()
