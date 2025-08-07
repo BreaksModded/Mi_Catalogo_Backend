@@ -958,46 +958,51 @@ def get_optimized_posters(
     """
     try:
         ids = [int(id.strip()) for id in media_ids.split(",") if id.strip().isdigit()]
-        
         if not ids:
             return {"posters": {}}
-        
-        # Obtener medias de la base de datos
+
+        # Normalizar idioma
+        lang = language.lower()
+        if lang.startswith("en"):
+            lang_code = "en"
+            lang_db = "en-US"
+            tmdb_lang = "en-US"
+        else:
+            lang_code = "es"
+            lang_db = "es-ES"
+            tmdb_lang = "es-ES"
+
         medias = db.query(models.Media).filter(models.Media.id.in_(ids)).all()
         result = {}
-        
+
         for media in medias:
             poster_url = None
-            
-            # Si el idioma es español, usar la imagen de la tabla media
-            if language == "es" and media.imagen:
+
+            # Español: usar imagen de la tabla media si existe y no está vacía
+            if lang_code == "es" and media.imagen:
                 poster_url = media.imagen
-            
-            # Si el idioma es inglés o no hay imagen en español, buscar en content_translations
-            if not poster_url and language == "en":
+
+            # Inglés: buscar en content_translations si existe y no está vacía
+            if not poster_url and lang_code == "en":
                 translation = db.query(models.ContentTranslation).filter(
                     models.ContentTranslation.media_id == media.id,
                     models.ContentTranslation.language_code == "en-US"
                 ).first()
-                
-                if translation and hasattr(translation, 'poster_url') and translation.poster_url:
+                if translation and getattr(translation, 'poster_url', None):
                     poster_url = translation.poster_url
-            
-            # Si no hay poster en la BD, hacer llamada a TMDb
+
+            # Si no hay poster en la BD, hacer llamada a TMDb y guardar SOLO si no existe ya
             if not poster_url and media.tmdb_id:
                 try:
-                    tmdb_poster = get_best_poster(media.tmdb_id, media.tipo, f"{language}-US" if language == "en" else "es-ES")
+                    tmdb_poster = get_best_poster(media.tmdb_id, media.tipo, tmdb_lang)
                     if tmdb_poster:
                         poster_url = tmdb_poster
-                        
-                        # Guardar en la base de datos para futuras consultas
-                        if language == "en":
-                            # Buscar o crear translation para inglés
+                        if lang_code == "en":
+                            # Guardar solo si no existe translation o poster_url vacío
                             translation = db.query(models.ContentTranslation).filter(
                                 models.ContentTranslation.media_id == media.id,
                                 models.ContentTranslation.language_code == "en-US"
                             ).first()
-                            
                             if not translation:
                                 translation = models.ContentTranslation(
                                     media_id=media.id,
@@ -1005,26 +1010,26 @@ def get_optimized_posters(
                                     poster_url=poster_url
                                 )
                                 db.add(translation)
-                            else:
-                                if hasattr(translation, 'poster_url'):
-                                    translation.poster_url = poster_url
+                                db.commit()
+                            elif not getattr(translation, 'poster_url', None):
+                                translation.poster_url = poster_url
                                 translation.updated_at = func.now()
+                                db.commit()
                         else:
-                            # Actualizar imagen en tabla media para español
-                            media.imagen = poster_url
-                        
-                        db.commit()
+                            # Guardar solo si no existe imagen en media
+                            if not media.imagen:
+                                media.imagen = poster_url
+                                db.commit()
                 except Exception as e:
                     print(f"Error obteniendo poster de TMDb para media {media.id}: {e}")
-            
+
             # Fallback a la imagen original si no se encontró nada
             if not poster_url:
                 poster_url = media.imagen
-            
+
             result[str(media.id)] = poster_url
-        
+
         return {"posters": result}
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting optimized posters: {str(e)}")
 
