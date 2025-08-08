@@ -25,33 +25,23 @@ import os
 from typing import List
 import unicodedata
 from bs4 import BeautifulSoup
+from config import TMDB_BASE_URL, REQUEST_TIMEOUT, get_tmdb_auth_headers, get_allowed_origins, get_lan_origin_regex
 
 app = FastAPI()
 
 # Activar compresión GZIP para todas las respuestas
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
-origins = [
-    "https://mi-catalogo-oguv.vercel.app",
-    "http://localhost:3000",  # para desarrollo local
-    "http://127.0.0.1:3000",  # otra forma de localhost
-    "http://192.168.0.25:3000",  # tu IP local específica para móvil
-]
+origins = get_allowed_origins()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"http://192\.168\.\d+\.\d+:3000",  # permitir cualquier IP 192.168.x.x:3000
+    allow_origin_regex=get_lan_origin_regex(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-OMDB_API_KEY = "5d30c905"
-OMDB_URL = "http://www.omdbapi.com/"
-TMDB_API_KEY = "ffac9eb544563d4d36980ea638fca7ce"
-TMDB_BEARER = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJmZmFjOWViNTQ0NTYzZDRkMzY5ODBlYTYzOGZjYTdjZSIsIm5iZiI6MTc0NTU3NTMwOC45NDQsInN1YiI6IjY4MGI1ZDhjYmZiZGYxZjhjNTg5ZGQxZiIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.XV-EtgE1xTwwSNtrlQYgemgsaqOApCGwvyNWehExQvs"
-TMDB_BASE_URL = "https://api.themoviedb.org/3"
 
 # Servir frontend React compilado
 CATALOG_BUILD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../catalog/build'))
@@ -70,16 +60,16 @@ def get_best_poster(tmdb_id, media_type, language="es-ES"):
     Obtiene la mejor portada para el idioma especificado.
     Busca primero portadas en el idioma solicitado, luego en inglés, y finalmente usa la por defecto.
     """
-    headers = {"Authorization": f"Bearer {TMDB_BEARER}"}
+    headers = get_tmdb_auth_headers()
     
     # Obtener todas las imágenes disponibles
     images_url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/images"
-    images_r = requests.get(images_url, headers=headers)
+    images_r = requests.get(images_url, headers=headers, timeout=REQUEST_TIMEOUT)
     
     if images_r.status_code != 200:
         # Si falla, usar la portada por defecto
         detail_url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}"
-        detail_r = requests.get(detail_url, headers=headers, params={"language": language})
+        detail_r = requests.get(detail_url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
         if detail_r.status_code == 200:
             detail = detail_r.json()
             if detail.get("poster_path"):
@@ -122,25 +112,32 @@ def get_best_poster(tmdb_id, media_type, language="es-ES"):
     return ""
 
 @app.get("/search", response_model=List[schemas.Media])
-def search_medias(q: str = Query(..., description="Búsqueda por título, actor o director"), db: Session = Depends(get_db)):
-    def normalize_str(s):
-        return ''.join(
-            c for c in unicodedata.normalize('NFD', s.lower())
-            if unicodedata.category(c) != 'Mn'
+def search_medias(
+    q: str = Query(..., description="Búsqueda por título, actor o director"),
+    skip: int = 0,
+    limit: int = 24,
+    db: Session = Depends(get_db)
+):
+    """Efficient search using SQL with ASCII-normalized LIKE across key fields.
+    Falls back to in-Python filter if DB does not support unaccent.
+    """
+    term = (q or "").strip()
+    if not term:
+        return []
+
+    # Try SQL-level case-insensitive search; simple LIKE on multiple columns
+    like = f"%{term}%"
+    query = db.query(models.Media).filter(
+        or_(
+            models.Media.titulo.ilike(like),
+            models.Media.titulo_ingles.ilike(like),
+            models.Media.elenco.ilike(like),
+            models.Media.director.ilike(like),
         )
-    q_norm = normalize_str(q.strip())
-    # Buscar todas las medias y filtrar en Python por coincidencia normalizada
-    medias = db.query(models.Media).all()
-    resultados = []
-    for m in medias:
-        if (
-            q_norm in normalize_str(m.titulo or "") or
-            q_norm in normalize_str(m.titulo_ingles or "") or
-            q_norm in normalize_str(m.elenco or "") or
-            q_norm in normalize_str(m.director or "")
-        ):
-            resultados.append(m)
-    return resultados
+    )
+
+    # Apply pagination
+    return query.offset(max(0, skip)).limit(max(1, min(limit, 200))).all()
 
 @app.on_event("startup")
 def startup():
@@ -175,7 +172,6 @@ def read_medias(
     except Exception as e:
         print("ERROR EN /medias:", e)
         traceback.print_exc()
-        from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=str(e))
 
 import unicodedata
@@ -442,7 +438,7 @@ def get_tmdb_info(
     media_type: str = Query(None, description="'movie' o 'tv' si se busca por id"),
     language: str = Query("es-ES", description="Idioma para la consulta TMDb (ej: 'es-ES', 'en-US')")
 ):
-    headers = {"Authorization": f"Bearer {TMDB_BEARER}"}
+    headers = get_tmdb_auth_headers()
     # Si se pasa id y media_type, buscar detalle exacto
     if id and media_type:
         tipo = "película" if media_type == "movie" else "serie"
@@ -450,11 +446,11 @@ def get_tmdb_info(
             detail_url = f"{TMDB_BASE_URL}/movie/{id}"
             credits_url = f"{TMDB_BASE_URL}/movie/{id}/credits"
             detail_params = {"language": language}
-            detail_r = requests.get(detail_url, headers=headers, params=detail_params)
+            detail_r = requests.get(detail_url, headers=headers, params=detail_params, timeout=REQUEST_TIMEOUT)
             if detail_r.status_code != 200:
                 raise HTTPException(status_code=502, detail="Error al obtener detalles de TMDb")
             detail = detail_r.json()
-            credits_r = requests.get(credits_url, headers=headers)
+            credits_r = requests.get(credits_url, headers=headers, timeout=REQUEST_TIMEOUT)
             director = ""
             elenco = ""
             if credits_r.status_code == 200:
@@ -466,13 +462,13 @@ def get_tmdb_info(
             # Obtener tráiler de YouTube (primero en el idioma solicitado, luego en inglés si no hay)
             trailer_url = None
             videos_url = f"{TMDB_BASE_URL}/movie/{id}/videos"
-            videos_r = requests.get(videos_url, headers=headers, params={"language": language})
+            videos_r = requests.get(videos_url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
             videos = []
             if videos_r.status_code == 200:
                 videos = videos_r.json().get("results", [])
             yt_trailers = [v for v in videos if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
             if not yt_trailers and language != "en-US":
-                videos_r_en = requests.get(videos_url, headers=headers, params={"language": "en-US"})
+                videos_r_en = requests.get(videos_url, headers=headers, params={"language": "en-US"}, timeout=REQUEST_TIMEOUT)
                 if videos_r_en.status_code == 200:
                     videos_en = videos_r_en.json().get("results", [])
                     yt_trailers = [v for v in videos_en if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
@@ -503,11 +499,11 @@ def get_tmdb_info(
             detail_url = f"{TMDB_BASE_URL}/tv/{id}"
             credits_url = f"{TMDB_BASE_URL}/tv/{id}/credits"
             detail_params = {"language": language}
-            detail_r = requests.get(detail_url, headers=headers, params=detail_params)
+            detail_r = requests.get(detail_url, headers=headers, params=detail_params, timeout=REQUEST_TIMEOUT)
             if detail_r.status_code != 200:
                 raise HTTPException(status_code=502, detail="Error al obtener detalles de TMDb")
             detail = detail_r.json()
-            credits_r = requests.get(credits_url, headers=headers)
+            credits_r = requests.get(credits_url, headers=headers, timeout=REQUEST_TIMEOUT)
             director = ""
             elenco = ""
             if credits_r.status_code == 200:
@@ -522,7 +518,7 @@ def get_tmdb_info(
                     continue
                 season_number = season["season_number"]
                 season_url = f"{TMDB_BASE_URL}/tv/{id}/season/{season_number}"
-                season_r = requests.get(season_url, headers=headers, params={"language": language})
+                season_r = requests.get(season_url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
                 if season_r.status_code != 200:
                     continue
                 season_data = season_r.json()
@@ -544,13 +540,13 @@ def get_tmdb_info(
             # Obtener tráiler de YouTube para series (primero en el idioma solicitado, luego en inglés si no hay)
             trailer_url = None
             videos_url = f"{TMDB_BASE_URL}/tv/{id}/videos"
-            videos_r = requests.get(videos_url, headers=headers, params={"language": language})
+            videos_r = requests.get(videos_url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
             videos = []
             if videos_r.status_code == 200:
                 videos = videos_r.json().get("results", [])
             yt_trailers = [v for v in videos if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
             if not yt_trailers and language != "en-US":
-                videos_r_en = requests.get(videos_url, headers=headers, params={"language": "en-US"})
+                videos_r_en = requests.get(videos_url, headers=headers, params={"language": "en-US"}, timeout=REQUEST_TIMEOUT)
                 if videos_r_en.status_code == 200:
                     videos_en = videos_r_en.json().get("results", [])
                     yt_trailers = [v for v in videos_en if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
@@ -580,7 +576,7 @@ def get_tmdb_info(
     if listar:
         search_url = f"{TMDB_BASE_URL}/search/multi"
         params = {"query": title, "language": language, "include_adult": "false"}
-        r = requests.get(search_url, headers=headers, params=params)
+        r = requests.get(search_url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
         if r.status_code != 200:
             raise HTTPException(status_code=502, detail="Error al conectar con TMDb")
         data = r.json()
@@ -606,7 +602,7 @@ def get_tmdb_info(
     if tipo_preferido:
         search_url = f"{TMDB_BASE_URL}/search/multi"
         params = {"query": title, "language": language, "include_adult": "false"}
-        r = requests.get(search_url, headers=headers, params=params)
+        r = requests.get(search_url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
         if r.status_code != 200:
             raise HTTPException(status_code=502, detail="Error al conectar con TMDb")
         data = r.json()
@@ -622,7 +618,7 @@ def get_tmdb_info(
     if not item:
         search_url = f"{TMDB_BASE_URL}/search/multi"
         params = {"query": title, "language": language, "include_adult": "false"}
-        r = requests.get(search_url, headers=headers, params=params)
+        r = requests.get(search_url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
         if r.status_code != 200:
             raise HTTPException(status_code=502, detail="Error al conectar con TMDb")
         data = r.json()
@@ -635,11 +631,11 @@ def get_tmdb_info(
         detail_url = f"{TMDB_BASE_URL}/movie/{item['id']}"
         credits_url = f"{TMDB_BASE_URL}/movie/{item['id']}/credits"
         detail_params = {"language": language}
-        detail_r = requests.get(detail_url, headers=headers, params=detail_params)
+        detail_r = requests.get(detail_url, headers=headers, params=detail_params, timeout=REQUEST_TIMEOUT)
         if detail_r.status_code != 200:
             raise HTTPException(status_code=502, detail="Error al obtener detalles de TMDb")
         detail = detail_r.json()
-        credits_r = requests.get(credits_url, headers=headers)
+        credits_r = requests.get(credits_url, headers=headers, timeout=REQUEST_TIMEOUT)
         director = ""
         elenco = ""
         if credits_r.status_code == 200:
@@ -672,11 +668,11 @@ def get_tmdb_info(
         detail_url = f"{TMDB_BASE_URL}/tv/{item['id']}"
         credits_url = f"{TMDB_BASE_URL}/tv/{item['id']}/credits"
         detail_params = {"language": language}
-        detail_r = requests.get(detail_url, headers=headers, params=detail_params)
+        detail_r = requests.get(detail_url, headers=headers, params=detail_params, timeout=REQUEST_TIMEOUT)
         if detail_r.status_code != 200:
             raise HTTPException(status_code=502, detail="Error al obtener detalles de TMDb")
         detail = detail_r.json()
-        credits_r = requests.get(credits_url, headers=headers)
+        credits_r = requests.get(credits_url, headers=headers, timeout=REQUEST_TIMEOUT)
         director = ""
         elenco = ""
         if credits_r.status_code == 200:
@@ -692,7 +688,7 @@ def get_tmdb_info(
                 continue
             season_number = season["season_number"]
             season_url = f"{TMDB_BASE_URL}/tv/{item['id']}/season/{season_number}"
-            season_r = requests.get(season_url, headers=headers, params={"language": language})
+            season_r = requests.get(season_url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
             if season_r.status_code != 200:
                 continue  # saltar temporadas sin info
             season_data = season_r.json()
@@ -730,6 +726,60 @@ def get_tmdb_info(
             "votos_tmdb": detail.get("vote_count"),
             "temporadas_detalle": temporadas_detalle
         }
+
+@app.get("/tmdb/{media_type}/{tmdb_id}/watch/providers")
+def tmdb_watch_providers(media_type: str, tmdb_id: int):
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/watch/providers"
+    r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener watch providers de TMDb")
+    return r.json()
+
+@app.get("/tmdb/{media_type}/{tmdb_id}/external_ids")
+def tmdb_external_ids(media_type: str, tmdb_id: int):
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/external_ids"
+    r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener external_ids de TMDb")
+    return r.json()
+
+# Lightweight proxy endpoints to avoid exposing client credentials
+@app.get("/tmdb/{media_type}/{tmdb_id}")
+def tmdb_detail(media_type: str, tmdb_id: int, language: str = Query("es-ES")):
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}"
+    r = requests.get(url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener detalle de TMDb")
+    return r.json()
+
+@app.get("/tmdb/collection/{collection_id}")
+def tmdb_collection(collection_id: int, language: str = Query("es-ES")):
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/collection/{collection_id}"
+    r = requests.get(url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener colección de TMDb")
+    return r.json()
+
+@app.get("/tmdb/{media_type}/{tmdb_id}/recommendations")
+def tmdb_recommendations(media_type: str, tmdb_id: int, language: str = Query("es-ES"), page: int = Query(1)):
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/recommendations"
+    r = requests.get(url, headers=headers, params={"language": language, "page": page}, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener recomendaciones de TMDb")
+    return r.json()
 
 @app.get("/listas", response_model=List[schemas.Lista])
 def get_listas(db: Session = Depends(get_db)):

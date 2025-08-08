@@ -98,8 +98,7 @@ def create_media(db: Session, media: schemas.MediaCreate):
     )
     db_media.tags = tags
     # --- Añadir keywords de TMDb si hay tmdb_id y tipo ---
-    TMDB_API_KEY = os.getenv("TMDB_API_KEY", "ffac9eb544563d4d36980ea638fca7ce")
-    TMDB_BASE_URL = "https://api.themoviedb.org/3"
+    from config import TMDB_API_KEY, TMDB_BASE_URL, get_tmdb_auth_headers
     def normalize_tipo(tipo):
         if not tipo:
             return ''
@@ -118,7 +117,11 @@ def create_media(db: Session, media: schemas.MediaCreate):
         else:
             url = None
         if url:
-            resp = requests.get(url, params={"api_key": TMDB_API_KEY})
+            headers = get_tmdb_auth_headers()
+            params = {}
+            if not headers and TMDB_API_KEY:
+                params["api_key"] = TMDB_API_KEY
+            resp = requests.get(url, headers=headers or None, params=params)
             if resp.status_code == 200:
                 data = resp.json()
                 kw_list = data.get('keywords') if tipo_norm == 'pelicula' else data.get('results')

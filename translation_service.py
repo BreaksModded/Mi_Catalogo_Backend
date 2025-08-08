@@ -7,14 +7,15 @@ from models import ContentTranslation, Media
 from datetime import datetime
 import requests
 import logging
+from config import get_tmdb_auth_headers, TMDB_BASE_URL, TMDB_API_KEY, REQUEST_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
 class TranslationService:
     def __init__(self, db: Session):
         self.db = db
-        self.tmdb_api_key = "ffac9eb544563d4d36980ea638fca7ce"
-        self.tmdb_base_url = "https://api.themoviedb.org/3"
+        self.tmdb_api_key = TMDB_API_KEY
+        self.tmdb_base_url = TMDB_BASE_URL
         
     def get_cached_translation(self, media_id: int, language_code: str) -> ContentTranslation:
         """Get cached translation from database"""
@@ -69,12 +70,13 @@ class TranslationService:
             endpoint = "movie" if media_type.lower() in ["movie", "película", "pelicula"] else "tv"
             
             url = f"{self.tmdb_base_url}/{endpoint}/{tmdb_id}"
-            params = {
-                "api_key": self.tmdb_api_key,
-                "language": tmdb_language
-            }
+            headers = get_tmdb_auth_headers()
+            # Prefer Bearer header; if not present, fall back to API key param
+            params = {"language": tmdb_language}
+            if not headers and self.tmdb_api_key:
+                params["api_key"] = self.tmdb_api_key
             
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, headers=headers or None, params=params, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
             data = response.json()
             
