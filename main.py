@@ -1184,9 +1184,19 @@ def get_optimized_posters(
                     if tmdb_poster:
                         poster_url = tmdb_poster
                         if lang_code == "en":
-                            # ...existing code...
+                            # Solo actualizar si ya existe una translation (no crear fila nueva)
+                            translation = db.query(models.ContentTranslation).filter(
+                                models.ContentTranslation.media_id == media_id,
+                                models.ContentTranslation.language_code == "en-US"
+                            ).first()
+                            if translation and hasattr(translation, 'poster_url'):
+                                translation.poster_url = poster_url
+                                translation.updated_at = func.now()
                         elif lang_code == "es":
-                            # ...existing code...
+                            # Español: solo actualizar si no hay imagen
+                            media = next((m for m in medias if m.id == media_id), None)
+                            if media and (not media.imagen or media.imagen.strip() == ""):
+                                media.imagen = poster_url
                         elif lang_code in ("pt", "fr", "de"):
                             lang_full_map = {"pt": "pt-PT", "fr": "fr-FR", "de": "de-DE"}
                             translation = db.query(models.ContentTranslation).filter(
