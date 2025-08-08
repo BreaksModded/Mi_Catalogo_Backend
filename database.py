@@ -26,58 +26,11 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-def check_and_add_poster_column():
-    """Verificar si existe la columna poster_url en content_translations y añadirla si no existe"""
-    try:
-        with engine.connect() as conn:
-            # Verificar si la columna ya existe
-            result = conn.execute(text("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = 'content_translations' 
-                AND column_name = 'poster_url'
-            """))
-            
-            if not result.fetchone():
-                conn.execute(text("""
-                    ALTER TABLE content_translations 
-                    ADD COLUMN poster_url VARCHAR(500)
-                """))
-                conn.commit()
-                
-    except Exception as e:
-        pass  # Continúa silenciosamente
-
-def remove_translated_description_column():
-    """Eliminar la columna translated_description duplicada de content_translations"""
-    try:
-        with engine.connect() as conn:
-            # Verificar si la columna existe
-            result = conn.execute(text("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = 'content_translations' 
-                AND column_name = 'translated_description'
-            """))
-            
-            if result.fetchone():
-                print("Eliminando columna duplicada translated_description de content_translations...")
-                conn.execute(text("""
-                    ALTER TABLE content_translations 
-                    DROP COLUMN translated_description
-                """))
-                conn.commit()
-                print("✅ Columna translated_description eliminada exitosamente")
-            else:
-                print("✓ Columna translated_description ya no existe en content_translations")
-                
-    except Exception as e:
-        print(f"Error eliminando columna translated_description: {e}")
-
 def optimize_poster_indexes():
     """Crear índices optimizados para consultas de portadas"""
     try:
-        with engine.connect() as conn:
+        # CREATE INDEX CONCURRENTLY no puede ejecutarse dentro de una transacción
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             # Índice compuesto para media (tmdb_id, tipo) - mejora consultas individuales
             conn.execute(text("""
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_tmdb_tipo 
@@ -105,17 +58,84 @@ def optimize_poster_indexes():
                 WHERE imagen IS NOT NULL AND imagen != ''
             """))
             
-            conn.commit()
+            # AUTOCOMMIT se encarga del commit
             
     except Exception as e:
         pass  # Continúa silenciosamente si hay errores de índices
 
+def ensure_pg_trgm_extension():
+    """Habilita la extensión pg_trgm para acelerar búsquedas ILIKE si está disponible."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            conn.commit()
+    except Exception:
+        # En plataformas gestionadas puede no ser necesario o estar restringido.
+        pass
+
+def optimize_search_indexes():
+    """Crear índices para acelerar búsquedas y listados (ILIKE y ordenaciones)."""
+    try:
+        # Para índices CONCURRENTLY, usar AUTOCOMMIT
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            # Índices GIN con pg_trgm para búsquedas por ILIKE
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_titulo_trgm 
+                ON media USING gin (titulo gin_trgm_ops)
+            """))
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_titulo_ingles_trgm 
+                ON media USING gin (titulo_ingles gin_trgm_ops)
+            """))
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_elenco_trgm 
+                ON media USING gin (elenco gin_trgm_ops)
+            """))
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_director_trgm 
+                ON media USING gin (director gin_trgm_ops)
+            """))
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_genero_trgm 
+                ON media USING gin (genero gin_trgm_ops)
+            """))
+
+            # Índices BTREE para filtros y ordenaciones frecuentes
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_fecha_creacion_desc 
+                ON media (fecha_creacion DESC)
+            """))
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_pendiente 
+                ON media (pendiente)
+            """))
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_favorito 
+                ON media (favorito)
+            """))
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_anio 
+                ON media (anio)
+            """))
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_nota_imdb 
+                ON media (nota_imdb)
+            """))
+            conn.execute(text("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_nota_personal 
+                ON media (nota_personal)
+            """))
+            # AUTOCOMMIT se encarga del commit
+    except Exception:
+        # Si falla (permiso/extension no disponible), continuar sin bloquear el arranque
+        pass
+
 def init_db():
     Base.metadata.create_all(bind=engine)
-    # Ejecutar migraciones necesarias
-    check_and_add_poster_column()
-    remove_translated_description_column()
+    # Optimización y extensiones necesarias
+    ensure_pg_trgm_extension()
     optimize_poster_indexes()
+    optimize_search_indexes()
 
 def get_db():
     db = SessionLocal()

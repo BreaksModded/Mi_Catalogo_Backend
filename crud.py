@@ -6,9 +6,9 @@ import unicodedata
 import requests
 import sqlalchemy as sa
 
-def get_medias(db: Session, skip: int = 0, limit: int = 5000, order_by: str = None, tipo: str = None, pendiente: bool = None,
-               genero: str = None, min_year: int = None, max_year: int = None, min_nota: float = None, min_nota_personal: float = None,
-               favorito: bool = None, tag_id: int = None, tmdb_id: int = None):
+def get_medias_query(db: Session, skip: int = 0, limit: int = 5000, order_by: str = None, tipo: str = None, pendiente: bool = None,
+                     genero: str = None, min_year: int = None, max_year: int = None, min_nota: float = None, min_nota_personal: float = None,
+                     favorito: bool = None, tag_id: int = None, tmdb_id: int = None):
     query = db.query(models.Media)
     # Aplicar filtros
     if tipo:
@@ -40,6 +40,14 @@ def get_medias(db: Session, skip: int = 0, limit: int = 5000, order_by: str = No
         query = query.order_by(models.Media.nota_imdb.desc().nullslast())
     elif order_by == "random":
         query = query.order_by(sa.func.random())
+    return query
+
+def get_medias(db: Session, skip: int = 0, limit: int = 5000, order_by: str = None, tipo: str = None, pendiente: bool = None,
+               genero: str = None, min_year: int = None, max_year: int = None, min_nota: float = None, min_nota_personal: float = None,
+               favorito: bool = None, tag_id: int = None, tmdb_id: int = None):
+    query = get_medias_query(db, skip=skip, limit=limit, order_by=order_by, tipo=tipo, pendiente=pendiente,
+                             genero=genero, min_year=min_year, max_year=max_year, min_nota=min_nota,
+                             min_nota_personal=min_nota_personal, favorito=favorito, tag_id=tag_id, tmdb_id=tmdb_id)
     return query.offset(skip).limit(limit).all()
 
 def get_media(db: Session, media_id: int):

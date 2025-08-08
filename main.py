@@ -12,11 +12,11 @@ from poster_cache import (
     get_cache_stats,
     clear_poster_cache
 )
-from fastapi import FastAPI, Depends, HTTPException, Query, Request, Body, status
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, Body, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 import requests
 import time
 from fastapi.staticfiles import StaticFiles
@@ -41,6 +41,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count"],
 )
 
 # Servir frontend React compilado
@@ -116,7 +117,9 @@ def search_medias(
     q: str = Query(..., description="Búsqueda por título, actor o director"),
     skip: int = 0,
     limit: int = 24,
-    db: Session = Depends(get_db)
+    include_total: bool = Query(False, description="Si true, añade X-Total-Count y puede envolver en {items,total}"),
+    db: Session = Depends(get_db),
+    response: Response = None
 ):
     """Efficient search using SQL with ASCII-normalized LIKE across key fields.
     Falls back to in-Python filter if DB does not support unaccent.
@@ -135,9 +138,14 @@ def search_medias(
             models.Media.director.ilike(like),
         )
     )
-
+    total = None
+    if include_total:
+        total = query.count()
+        if response is not None:
+            response.headers["X-Total-Count"] = str(total)
     # Apply pagination
-    return query.offset(max(0, skip)).limit(max(1, min(limit, 200))).all()
+    items = query.offset(max(0, skip)).limit(max(1, min(limit, 200))).all()
+    return items
 
 @app.on_event("startup")
 def startup():
@@ -158,16 +166,24 @@ def read_medias(
     min_nota: float = None,
     min_nota_personal: float = None,
     tmdb_id: int = None,
-    db: Session = Depends(get_db)
+    include_total: bool = Query(False, description="Si true, añade X-Total-Count a la respuesta"),
+    db: Session = Depends(get_db),
+    response: Response = None
 ):
     import traceback
     try:
-        result = crud.get_medias(
+        base_query = crud.get_medias_query(
             db, skip=skip, limit=limit, order_by=order_by, tipo=tipo, pendiente=pendiente,
             genero=genero, min_year=min_year, max_year=max_year,
             min_nota=min_nota, min_nota_personal=min_nota_personal,
             favorito=favorito, tag_id=tag_id, tmdb_id=tmdb_id
         )
+        total = None
+        if include_total:
+            total = base_query.count()
+            if response is not None:
+                response.headers["X-Total-Count"] = str(total)
+        result = base_query.offset(skip).limit(limit).all()
         return result
     except Exception as e:
         print("ERROR EN /medias:", e)
@@ -344,6 +360,30 @@ def top_personas(db: Session = Depends(get_db)):
             conteo[anio] = conteo.get(anio, 0) + 1
     # Devuelve ordenado por año ascendente
     return dict(sorted(conteo.items()))
+
+@app.get("/health")
+def healthcheck():
+    started = time.time()
+    db_status = "error"
+    db_error = None
+    try:
+        with database.engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        db_status = "ok"
+    except Exception as e:
+        db_error = str(e)
+    cache = {
+        "poster_cache": get_cache_stats() or {}
+    }
+    elapsed_ms = round((time.time() - started) * 1000)
+    overall = "ok" if db_status == "ok" else "degraded"
+    return {
+        "status": overall,
+        "db": db_status,
+        "db_error": db_error,
+        "cache": cache,
+        "latency_ms": elapsed_ms
+    }
 
 @app.get("/medias/{media_id}", response_model=schemas.Media)
 def read_media(media_id: int, db: Session = Depends(get_db)):
