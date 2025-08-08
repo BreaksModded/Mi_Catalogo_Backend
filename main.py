@@ -446,7 +446,13 @@ def get_tags(db: Session = Depends(get_db)):
 
 @app.post("/tags", response_model=schemas.Tag)
 def create_tag(tag: schemas.TagCreate, db: Session = Depends(get_db)):
-    return crud.create_tag(db, tag)
+    try:
+        return crud.create_tag(db, tag)
+    except Exception as e:
+        msg = str(e)
+        lower = msg.lower()
+        status_code = 409 if "existe un tag" in lower else 400
+        raise HTTPException(status_code=status_code, detail=msg)
 
 @app.post("/medias/{media_id}/tags/{tag_id}", response_model=schemas.Media)
 def add_tag_to_media(media_id: int, tag_id: int, db: Session = Depends(get_db)):
@@ -972,7 +978,7 @@ def clear_translation_cache(
 def get_dynamic_poster(
     tmdb_id: int,
     media_type: str = Query(..., description="movie o tv"),
-    language: str = Query("es-ES", description="Idioma para la portada (ej: es-ES, en-US)"),
+    language: str = Query("es-ES", description="Idioma para la portada (ej: es-ES, en-US, pt-PT, fr-FR, de-DE)"),
     db: Session = Depends(get_db)
 ):
     """
@@ -980,8 +986,13 @@ def get_dynamic_poster(
     Busca primero en cache, luego en la base de datos, luego en TMDb si no existe.
     """
     try:
-        # Convertir language a formato simple (es o en)
-        lang_code = "es" if language.startswith("es") else "en"
+        # Convertir language a formato simple (es, en, pt, fr, de)
+        if language.startswith("es"): lang_code = "es"
+        elif language.startswith("en"): lang_code = "en"
+        elif language.startswith("pt"): lang_code = "pt"
+        elif language.startswith("fr"): lang_code = "fr"
+        elif language.startswith("de"): lang_code = "de"
+        else: lang_code = "en"
         
         # Generar clave de cache
         cache_key = get_cache_key(None, lang_code, tmdb_id)
@@ -1002,8 +1013,7 @@ def get_dynamic_poster(
             # Query optimizada: buscar español e inglés en una sola consulta
             if lang_code == "es" and media.imagen:
                 poster_url = media.imagen
-            
-            # Si el idioma es inglés, buscar en content_translations con índice optimizado
+            # Si idioma es inglés reutiliza lógica existente
             if not poster_url and lang_code == "en":
                 translation = db.query(models.ContentTranslation).filter(
                     models.ContentTranslation.media_id == media.id,
@@ -1011,10 +1021,19 @@ def get_dynamic_poster(
                     models.ContentTranslation.poster_url.isnot(None),
                     models.ContentTranslation.poster_url != ""
                 ).first()
-                
                 if translation:
                     poster_url = translation.poster_url
-            
+            # Intentar traducciones adicionales (pt, fr, de)
+            if not poster_url and lang_code in ("pt", "fr", "de"):
+                lang_full_map = {"pt": "pt-PT", "fr": "fr-FR", "de": "de-DE"}
+                translation = db.query(models.ContentTranslation).filter(
+                    models.ContentTranslation.media_id == media.id,
+                    models.ContentTranslation.language_code == lang_full_map[lang_code],
+                    models.ContentTranslation.poster_url.isnot(None),
+                    models.ContentTranslation.poster_url != ""
+                ).first()
+                if translation:
+                    poster_url = translation.poster_url
             # Si no hay poster en la BD, hacer llamada a TMDb y guardar
             if not poster_url:
                 tmdb_poster = get_best_poster(tmdb_id, media_type, language)
@@ -1033,8 +1052,19 @@ def get_dynamic_poster(
                             translation.poster_url = poster_url
                             translation.updated_at = func.now()
                             db.commit()
+                    elif lang_code in ("pt", "fr", "de"):
+                        # Actualizar/crear traducción específica si existe fila
+                        lang_full_map = {"pt": "pt-PT", "fr": "fr-FR", "de": "de-DE"}
+                        translation = db.query(models.ContentTranslation).filter(
+                            models.ContentTranslation.media_id == media.id,
+                            models.ContentTranslation.language_code == lang_full_map[lang_code]
+                        ).first()
+                        if translation and (not translation.poster_url or translation.poster_url.strip() == ""):
+                            translation.poster_url = poster_url
+                            translation.updated_at = func.now()
+                            db.commit()
                     else:
-                        # Actualizar imagen en tabla media para español
+                        # Español
                         if not media.imagen or media.imagen.strip() == "":
                             media.imagen = poster_url
                             db.commit()
@@ -1058,7 +1088,7 @@ def get_dynamic_poster(
 @app.get("/posters-optimized")
 def get_optimized_posters(
     media_ids: str = Query(..., description="Lista de IDs de media separados por comas"),
-    language: str = Query("es", description="Idioma preferido (es o en)"),
+    language: str = Query("es", description="Idioma preferido (es, en, pt, fr, de)"),
     db: Session = Depends(get_db)
 ):
     """
@@ -1070,16 +1100,13 @@ def get_optimized_posters(
         if not ids:
             return {"posters": {}}
 
-        # Normalizar idioma
+        # Normalizar idioma ampliado
         lang = language.lower()
-        if lang.startswith("en"):
-            lang_code = "en"
-            lang_db = "en-US"
-            tmdb_lang = "en-US"
-        else:
-            lang_code = "es"
-            lang_db = "es-ES"
-            tmdb_lang = "es-ES"
+        if lang.startswith("en"): lang_code, lang_db, tmdb_lang = "en", "en-US", "en-US"
+        elif lang.startswith("pt"): lang_code, lang_db, tmdb_lang = "pt", "pt-PT", "pt-PT"
+        elif lang.startswith("fr"): lang_code, lang_db, tmdb_lang = "fr", "fr-FR", "fr-FR"
+        elif lang.startswith("de"): lang_code, lang_db, tmdb_lang = "de", "de-DE", "de-DE"
+        else: lang_code, lang_db, tmdb_lang = "es", "es-ES", "es-ES"
 
         # Generar claves de cache para todos los medias
         cache_keys = {media_id: get_cache_key(media_id, lang_code) for media_id in ids}
@@ -1114,6 +1141,15 @@ def get_optimized_posters(
                     models.ContentTranslation.poster_url != ""
                 ).all()
                 translations_map = {t.media_id: t.poster_url for t in translations}
+            elif lang_code in ("pt", "fr", "de"):
+                lang_full_map = {"pt": "pt-PT", "fr": "fr-FR", "de": "de-DE"}
+                translations = db.query(models.ContentTranslation).filter(
+                    models.ContentTranslation.media_id.in_(ids_to_fetch),
+                    models.ContentTranslation.language_code == lang_full_map[lang_code],
+                    models.ContentTranslation.poster_url.isnot(None),
+                    models.ContentTranslation.poster_url != ""
+                ).all()
+                translations_map = {t.media_id: t.poster_url for t in translations}
 
             # Procesar cada media
             new_cache_data = {}
@@ -1127,6 +1163,8 @@ def get_optimized_posters(
                     poster_url = translations_map.get(media.id)
                 elif lang_code == "es" and media.imagen and str(media.imagen).strip() != "":
                     poster_url = media.imagen
+                elif lang_code in ("pt", "fr", "de"):
+                    poster_url = translations_map.get(media.id)
 
                 # Si no hay poster en la BD, preparar para TMDb
                 if (not poster_url or str(poster_url).strip() == "") and media.tmdb_id:
@@ -1145,22 +1183,18 @@ def get_optimized_posters(
                     tmdb_poster = get_best_poster(tmdb_id, tipo, tmdb_lang)
                     if tmdb_poster:
                         poster_url = tmdb_poster
-                        
-                        # Guardar en BD según idioma
                         if lang_code == "en":
-                            # Solo actualizar si ya existe una traducción
+                            # ...existing code...
+                        elif lang_code == "es":
+                            # ...existing code...
+                        elif lang_code in ("pt", "fr", "de"):
+                            lang_full_map = {"pt": "pt-PT", "fr": "fr-FR", "de": "de-DE"}
                             translation = db.query(models.ContentTranslation).filter(
                                 models.ContentTranslation.media_id == media_id,
-                                models.ContentTranslation.language_code == "en-US"
+                                models.ContentTranslation.language_code == lang_full_map[lang_code]
                             ).first()
-                            if translation and (not getattr(translation, 'poster_url', None) or str(translation.poster_url).strip() == ""):
+                            if translation and (not translation.poster_url or translation.poster_url.strip() == ""):
                                 translation.poster_url = poster_url
-                                translation.updated_at = func.now()
-                        else:
-                            # Actualizar solo si no existe imagen en media o está vacía
-                            media = next((m for m in medias if m.id == media_id), None)
-                            if media and (not media.imagen or str(media.imagen).strip() == ""):
-                                media.imagen = poster_url
                     else:
                         # No se encontró en TMDb, usar imagen original
                         media = next((m for m in medias if m.id == media_id), None)
