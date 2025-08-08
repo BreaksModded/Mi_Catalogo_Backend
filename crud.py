@@ -5,13 +5,20 @@ import os
 import unicodedata
 import requests
 import sqlalchemy as sa
+<<<<<<< HEAD
 from sqlalchemy.orm import joinedload
+=======
+>>>>>>> 1d410a4beb87516ba9f90c03a16220ace0a437aa
 
 def get_medias_query(db: Session, skip: int = 0, limit: int = 5000, order_by: str = None, tipo: str = None, pendiente: bool = None,
                      genero: str = None, min_year: int = None, max_year: int = None, min_nota: float = None, min_nota_personal: float = None,
                      favorito: bool = None, tag_id: int = None, tmdb_id: int = None):
+<<<<<<< HEAD
     # Eager load de relaciones necesarias para evitar listas de tags vacías al serializar
     query = db.query(models.Media).options(joinedload(models.Media.tags))
+=======
+    query = db.query(models.Media)
+>>>>>>> 1d410a4beb87516ba9f90c03a16220ace0a437aa
     # Aplicar filtros
     if tipo:
         query = query.filter(models.Media.tipo.ilike(tipo))
@@ -53,8 +60,12 @@ def get_medias(db: Session, skip: int = 0, limit: int = 5000, order_by: str = No
     return query.offset(skip).limit(limit).all()
 
 def get_media(db: Session, media_id: int):
+<<<<<<< HEAD
     # Eager load de tags para asegurar que vengan en la respuesta
     return db.query(models.Media).options(joinedload(models.Media.tags)).filter(models.Media.id == media_id).first()
+=======
+    return db.query(models.Media).filter(models.Media.id == media_id).first()
+>>>>>>> 1d410a4beb87516ba9f90c03a16220ace0a437aa
 
 # --- NUEVO: obtener similares por género y keywords ---
 from sqlalchemy import or_
@@ -208,6 +219,7 @@ def add_tag_to_media(db: Session, media_id: int, tag_id: int):
     if media and tag and tag not in media.tags:
         media.tags.append(tag)
         db.commit()
+<<<<<<< HEAD
         # Devolver con tags eager-loaded para que el frontend reciba los tags
         from sqlalchemy.orm import joinedload
         return db.query(models.Media).options(joinedload(models.Media.tags)).filter(models.Media.id == media_id).first()
@@ -215,6 +227,10 @@ def add_tag_to_media(db: Session, media_id: int, tag_id: int):
     from sqlalchemy.orm import joinedload
     return db.query(models.Media).options(joinedload(models.Media.tags)).filter(models.Media.id == media_id).first()
 
+=======
+        db.refresh(media)
+    return media
+>>>>>>> 1d410a4beb87516ba9f90c03a16220ace0a437aa
 
 def remove_tag_from_media(db: Session, media_id: int, tag_id: int):
     media = db.query(models.Media).filter(models.Media.id == media_id).first()
@@ -222,11 +238,16 @@ def remove_tag_from_media(db: Session, media_id: int, tag_id: int):
     if media and tag and tag in media.tags:
         media.tags.remove(tag)
         db.commit()
+<<<<<<< HEAD
         # Devolver con tags eager-loaded
         from sqlalchemy.orm import joinedload
         return db.query(models.Media).options(joinedload(models.Media.tags)).filter(models.Media.id == media_id).first()
     from sqlalchemy.orm import joinedload
     return db.query(models.Media).options(joinedload(models.Media.tags)).filter(models.Media.id == media_id).first()
+=======
+        db.refresh(media)
+    return media
+>>>>>>> 1d410a4beb87516ba9f90c03a16220ace0a437aa
 
 def delete_tag(db: Session, tag_id: int):
     db_tag = db.query(models.Tag).filter(models.Tag.id == tag_id).first()
