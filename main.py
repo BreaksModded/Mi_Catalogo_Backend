@@ -841,48 +841,37 @@ def tmdb_recommendations(media_type: str, tmdb_id: int, language: str = Query("e
         raise HTTPException(status_code=502, detail="Error al obtener recomendaciones de TMDb")
     return r.json()
 
-@app.get("/listas", response_model=List[schemas.Lista])
-def get_listas(db: Session = Depends(get_db)):
-    return crud.get_listas(db)
+# --- Person endpoints (TMDb proxy) ---
+@app.get("/tmdb/person/{person_id}")
+def tmdb_person_detail(person_id: int, language: str = Query("es-ES")):
+    """Proxy para obtener detalles de una persona (actor/director) desde TMDb"""
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/person/{person_id}"
+    r = requests.get(url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener detalles de la persona en TMDb")
+    return r.json()
 
-@app.get("/listas/{lista_id}", response_model=schemas.Lista)
-def get_lista(lista_id: int, db: Session = Depends(get_db)):
-    lista = crud.get_lista(db, lista_id)
-    if not lista:
-        raise HTTPException(status_code=404, detail="Lista no encontrada")
-    return lista
+@app.get("/tmdb/person/{person_id}/combined_credits")
+def tmdb_person_combined_credits(person_id: int, language: str = Query("es-ES")):
+    """Proxy para obtener créditos combinados (películas y series) de una persona en TMDb"""
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/person/{person_id}/combined_credits"
+    # language suele aplicarse a los títulos de movie/tv en los créditos
+    r = requests.get(url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener combined_credits de la persona en TMDb")
+    return r.json()
 
-@app.post("/listas", response_model=schemas.Lista, status_code=status.HTTP_201_CREATED)
-def create_lista(lista: schemas.ListaCreate, db: Session = Depends(get_db)):
-    return crud.create_lista(db, lista)
-
-@app.delete("/listas/{lista_id}", response_model=schemas.Lista)
-def delete_lista(lista_id: int, db: Session = Depends(get_db)):
-    lista = crud.delete_lista(db, lista_id)
-    if not lista:
-        raise HTTPException(status_code=404, detail="Lista no encontrada")
-    return lista
-
-@app.put("/listas/{lista_id}", response_model=schemas.Lista)
-def update_lista(lista_id: int, nombre: str = Body(None), descripcion: str = Body(None), db: Session = Depends(get_db)):
-    lista = crud.update_lista(db, lista_id, nombre, descripcion)
-    if not lista:
-        raise HTTPException(status_code=404, detail="Lista no encontrada")
-    return lista
-
-@app.post("/listas/{lista_id}/add_media/{media_id}", response_model=schemas.Lista)
-def add_media_to_lista(lista_id: int, media_id: int, db: Session = Depends(get_db)):
-    lista = crud.add_media_to_lista(db, lista_id, media_id)
-    if not lista:
-        raise HTTPException(status_code=404, detail="Lista o media no encontrada")
-    return lista
-
-@app.delete("/listas/{lista_id}/remove_media/{media_id}", response_model=schemas.Lista)
-def remove_media_from_lista(lista_id: int, media_id: int, db: Session = Depends(get_db)):
-    lista = crud.remove_media_from_lista(db, lista_id, media_id)
-    if not lista:
-        raise HTTPException(status_code=404, detail="Lista o media no encontrada")
-    return lista
+@app.get("/tmdb/person/{person_id}/external_ids")
+def tmdb_person_external_ids(person_id: int):
+    """Proxy para obtener IDs externos (Twitter/Instagram/FB) de una persona en TMDb"""
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/person/{person_id}/external_ids"
+    r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener external_ids de la persona en TMDb")
+    return r.json()
 
 # --- ENDPOINTS PARA TRADUCCIONES ---
 

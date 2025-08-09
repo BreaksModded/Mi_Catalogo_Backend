@@ -6,6 +6,7 @@ import unicodedata
 import requests
 import sqlalchemy as sa
 from sqlalchemy.orm import joinedload
+from sqlalchemy.exc import IntegrityError
 
 def get_medias_query(db: Session, skip: int = 0, limit: int = 5000, order_by: str = None, tipo: str = None, pendiente: bool = None,
                      genero: str = None, min_year: int = None, max_year: int = None, min_nota: float = None, min_nota_personal: float = None,
@@ -196,11 +197,30 @@ def get_tags(db: Session):
     return db.query(models.Tag).all()
 
 def create_tag(db: Session, tag: schemas.TagCreate):
-    db_tag = models.Tag(nombre=tag.nombre)
-    db.add(db_tag)
-    db.commit()
-    db.refresh(db_tag)
-    return db_tag
+    # Normalizar y validar nombre (evita vacíos y duplicados por acentos/mayúsculas)
+    name_input = (getattr(tag, 'nombre', '') or '').strip()
+    if not name_input:
+        # Mensaje claro para frontend/i18n existente
+        raise Exception('El nombre del tag no puede estar vacío')
+    normalized_new = models.normalize_str(name_input)
+
+    # Comprobación en Python para evitar duplicados accent/case-insensitive
+    # (cantidad de tags suele ser baja; si creciera se puede migrar a un índice normalizado)
+    existing_tags = db.query(models.Tag).all()
+    for t in existing_tags:
+        if models.normalize_str(getattr(t, 'nombre', '')) == normalized_new:
+            raise Exception('Ya existe un tag con ese nombre')
+
+    # Intentar crear; si hay colisión por UNIQUE, capturar y devolver mensaje coherente
+    try:
+        db_tag = models.Tag(nombre=name_input)
+        db.add(db_tag)
+        db.commit()
+        db.refresh(db_tag)
+        return db_tag
+    except IntegrityError:
+        db.rollback()
+        raise Exception('Ya existe un tag con ese nombre')
 
 def add_tag_to_media(db: Session, media_id: int, tag_id: int):
     media = db.query(models.Media).filter(models.Media.id == media_id).first()

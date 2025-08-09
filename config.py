@@ -41,11 +41,21 @@ def get_allowed_origins_default():
     ]
 
 def get_allowed_origins():
+    """Merge env-provided origins with safe defaults for dev.
+    This prevents accidental removal of localhost during prod deploys.
+    """
+    defaults = get_allowed_origins_default()
     if not ALLOWED_ORIGINS_ENV:
-        return get_allowed_origins_default()
-    # split by comma and trim
-    return [o.strip() for o in ALLOWED_ORIGINS_ENV.split(",") if o.strip()]
+        return defaults
+    env_list = [o.strip() for o in ALLOWED_ORIGINS_ENV.split(",") if o.strip()]
+    # Merge without duplicates, keeping env first (so ops can override order if needed)
+    merged = []
+    for o in env_list + defaults:
+        if o not in merged:
+            merged.append(o)
+    return merged
 
 def get_lan_origin_regex():
-    # Allow 192.168.x.x on ports 3000 or 5173
-    return r"http://192\.168\.\d+\.\d+:(3000|5173)"
+    # Allow typical LAN ranges and localhost on common dev ports
+    # 192.168.x.x, 10.x.x.x, 172.16-31.x.x + localhost/127.0.0.1 on 3000 or 5173
+    return r"http://((192\.168|10\.|172\.(1[6-9]|2[0-9]|3[01]))\.(\d{1,3})\.(\d{1,3})|localhost|127\.0\.0\.1):(3000|5173)"
