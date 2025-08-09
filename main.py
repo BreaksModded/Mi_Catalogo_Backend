@@ -786,36 +786,29 @@ def tmdb_watch_providers(media_type: str, tmdb_id: int):
 
 @app.get("/tmdb/{media_type}/{tmdb_id}/external_ids")
 def tmdb_external_ids(media_type: str, tmdb_id: int):
-    if media_type not in ("movie", "tv"):
-        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
+    # Accept person as well to avoid route conflicts with /tmdb/person/{id}/external_ids
+    if media_type not in ("movie", "tv", "person"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie', 'tv' or 'person'")
     headers = get_tmdb_auth_headers()
-    url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/external_ids"
+    if media_type == "person":
+        url = f"{TMDB_BASE_URL}/person/{tmdb_id}/external_ids"
+    else:
+        url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/external_ids"
     r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail="Error al obtener external_ids de TMDb")
     return r.json()
 
-@app.get("/tmdb/{media_type}/{tmdb_id}/credits")
-def tmdb_credits(media_type: str, tmdb_id: int):
-    """
-    Proxy para obtener créditos (cast y crew) de TMDb para una película o serie.
-    """
-    if media_type not in ("movie", "tv"):
-        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
-    headers = get_tmdb_auth_headers()
-    url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/credits"
-    r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-    if r.status_code != 200:
-        raise HTTPException(status_code=502, detail="Error al obtener créditos de TMDb")
-    return r.json()
-
-# Lightweight proxy endpoints to avoid exposing client credentials
 @app.get("/tmdb/{media_type}/{tmdb_id}")
 def tmdb_detail(media_type: str, tmdb_id: int, language: str = Query("es-ES")):
-    if media_type not in ("movie", "tv"):
-        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
+    # Accept person as well to avoid conflicts with /tmdb/person/{id}
+    if media_type not in ("movie", "tv", "person"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie', 'tv' or 'person'")
     headers = get_tmdb_auth_headers()
-    url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}"
+    if media_type == "person":
+        url = f"{TMDB_BASE_URL}/person/{tmdb_id}"
+    else:
+        url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}"
     r = requests.get(url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail="Error al obtener detalle de TMDb")
