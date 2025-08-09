@@ -834,7 +834,22 @@ def tmdb_recommendations(media_type: str, tmdb_id: int, language: str = Query("e
         raise HTTPException(status_code=502, detail="Error al obtener recomendaciones de TMDb")
     return r.json()
 
+from sqlalchemy import or_
 # --- Person endpoints (TMDb proxy) ---
+# Endpoint: Medias vistas con este actor (por tmdb_id de persona)
+@app.get("/medias/by_actor/{person_tmdb_id}", response_model=List[schemas.Media])
+def get_medias_by_actor(person_tmdb_id: int, db: Session = Depends(get_db)):
+    """
+    Devuelve todas las medias donde el actor con ese TMDb ID aparece en el campo elenco (como id o nombre).
+    Busca coincidencias en el campo elenco (que es texto, puede contener ids o nombres).
+    """
+    # El campo elenco puede ser: "Nombre1 (id1), Nombre2 (id2), ..."
+    # Buscamos por id entre paréntesis o por nombre exacto si no hay id
+    # Ejemplo: elenco = "Tom Hanks (31), Tim Allen (12898)"
+    # Para person_tmdb_id=31, buscar "(31)" en elenco
+    pattern = f"({person_tmdb_id})"
+    query = db.query(models.Media).filter(models.Media.elenco.ilike(f"%{pattern}%"))
+    return query.all()
 @app.get("/tmdb/person/{person_id}")
 def tmdb_person_detail(person_id: int, language: str = Query("es-ES")):
     """Proxy para obtener detalles de una persona (actor/director) desde TMDb"""
