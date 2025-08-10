@@ -823,6 +823,20 @@ def tmdb_collection(collection_id: int, language: str = Query("es-ES")):
         raise HTTPException(status_code=502, detail="Error al obtener colección de TMDb")
     return r.json()
 
+
+# Endpoint para obtener los créditos (reparto y equipo) de una película o serie desde TMDb
+@app.get("/tmdb/{media_type}/{tmdb_id}/credits")
+def tmdb_credits(media_type: str, tmdb_id: int):
+    """Proxy para obtener créditos (cast y crew) de una película o serie desde TMDb"""
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/credits"
+    r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener créditos de TMDb")
+    return r.json()
+
 @app.get("/tmdb/{media_type}/{tmdb_id}/recommendations")
 def tmdb_recommendations(media_type: str, tmdb_id: int, language: str = Query("es-ES"), page: int = Query(1)):
     if media_type not in ("movie", "tv"):
