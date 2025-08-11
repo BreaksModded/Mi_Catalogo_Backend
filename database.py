@@ -2,6 +2,7 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 # Cargar variables de entorno desde .env si está disponible
 try:
@@ -18,12 +19,20 @@ if not DATABASE_URL:
 # Para Session Pooler de Supabase, usar SSL
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"sslmode": "require"},
+    #connect_args={"sslmode": "require"},
     pool_pre_ping=True,  # Verificar conexiones antes de usar
     pool_recycle=300     # Reciclar conexiones cada 5 minutos
 )
 
+# Motor asíncrono para fastapi-users
+async_engine = create_async_engine(
+    DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://"),
+    pool_pre_ping=True,
+    pool_recycle=300
+)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False)
 Base = declarative_base()
 
 def optimize_poster_indexes():
@@ -138,8 +147,14 @@ def init_db():
     optimize_search_indexes()
 
 def get_db():
+    """Obtener sesión de base de datos síncrona"""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+async def get_async_db():
+    """Obtener sesión de base de datos asíncrona para fastapi-users"""
+    async with AsyncSessionLocal() as session:
+        yield session

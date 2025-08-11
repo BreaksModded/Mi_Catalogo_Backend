@@ -26,11 +26,21 @@ from typing import List
 import unicodedata
 from bs4 import BeautifulSoup
 from config import TMDB_BASE_URL, REQUEST_TIMEOUT, get_tmdb_auth_headers, get_allowed_origins, get_lan_origin_regex
+from fastapi_users import FastAPIUsers
+from fastapi_users.authentication import JWTStrategy, AuthenticationBackend, CookieTransport
+from fastapi_users.router import get_auth_router, get_register_router
+from users import User
+from user_manager import get_user_manager, SECRET
+from user_manager import get_user_db
+from schemas import UserRead, UserCreate
+
 
 app = FastAPI()
 
 # Activar compresión GZIP para todas las respuestas
+
 app.add_middleware(GZipMiddleware, minimum_size=500)
+
 
 origins = get_allowed_origins()
 
@@ -43,6 +53,33 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Total-Count"],
 )
+
+# Configuración de autenticación
+cookie_transport = CookieTransport(
+    cookie_name="auth",
+    cookie_max_age=3600,
+    cookie_secure=False,   # Permitir cookies en http para desarrollo local
+    cookie_samesite="lax" # Permitir navegación entre páginas en localhost
+)
+
+def get_jwt_strategy() -> JWTStrategy:
+    return JWTStrategy(secret=SECRET, lifetime_seconds=60 * 60 * 24)
+
+auth_backend = AuthenticationBackend(
+    name="jwt",
+    transport=cookie_transport,
+    get_strategy=get_jwt_strategy,
+)
+
+fastapi_users = FastAPIUsers[User, int](
+    get_user_manager,
+    [auth_backend],
+)
+
+# Dependencia para obtener el usuario actual (opcional)
+current_user_optional = fastapi_users.current_user(optional=True)
+# Dependencia para obtener el usuario actual (requerido)
+current_user_required = fastapi_users.current_user()
 
 # Servir frontend React compilado
 CATALOG_BUILD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../catalog/build'))
@@ -155,8 +192,6 @@ def startup():
 def read_medias(
     skip: int = 0,
     limit: int = 24,
-    pendiente: bool = None,
-    favorito: bool = None,
     tag_id: int = None,
     order_by: str = None,
     tipo: str = None,
@@ -164,19 +199,30 @@ def read_medias(
     min_year: int = None,
     max_year: int = None,
     min_nota: float = None,
-    min_nota_personal: float = None,
     tmdb_id: int = None,
     include_total: bool = Query(False, description="Si true, añade X-Total-Count a la respuesta"),
     db: Session = Depends(get_db),
-    response: Response = None
+    response: Response = None,
+    current_user: User = Depends(current_user_optional)  # Autenticación opcional
 ):
+    """
+    Obtiene las películas/series del catálogo privado del usuario autenticado.
+    Si no hay usuario autenticado, devuelve lista vacía.
+    """
     import traceback
     try:
+        # Si no hay usuario autenticado, devolver lista vacía
+        if current_user is None:
+            if response is not None:
+                response.headers["X-Total-Count"] = "0"
+            return []
+        
+        # Solo obtener medias del usuario actual
         base_query = crud.get_medias_query(
-            db, skip=skip, limit=limit, order_by=order_by, tipo=tipo, pendiente=pendiente,
+            db, skip=skip, limit=limit, order_by=order_by, tipo=tipo,
             genero=genero, min_year=min_year, max_year=max_year,
-            min_nota=min_nota, min_nota_personal=min_nota_personal,
-            favorito=favorito, tag_id=tag_id, tmdb_id=tmdb_id
+            min_nota=min_nota, tag_id=tag_id, tmdb_id=tmdb_id,
+            usuario_id=current_user.id  # Filtrar por usuario
         )
         total = None
         if include_total:
@@ -194,13 +240,11 @@ import unicodedata
 
 @app.get("/medias/count")
 def count_medias(
-    pendiente: bool = None,
     tipo: str = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(current_user_required)
 ):
-    query = db.query(models.Media)
-    if pendiente is not None:
-        query = query.filter(models.Media.pendiente == pendiente)
+    query = db.query(models.Media).filter(models.Media.usuario_id == current_user.id)
     if tipo:
         def normalize(s):
             return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
@@ -211,36 +255,18 @@ def count_medias(
 @app.get("/medias/top5")
 def top5_medias(
     tipo: str = Query(..., description="pelicula o serie"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(current_user_required)
 ):
-    import unicodedata
-    def normalize(s):
-        return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
-    tipo_norm = normalize(tipo)
-    query = db.query(models.Media).filter(
-        models.Media.pendiente == False,
-        models.Media.nota_personal != None
-    )
-    ids = [m.id for m in query if normalize(m.tipo) == tipo_norm]
-    result = db.query(models.Media).filter(
-        models.Media.id.in_(ids)
-    ).order_by(models.Media.nota_personal.desc()).limit(5).all()
-    return [
-        {
-            "id": m.id,
-            "titulo": m.titulo,
-            "nota_personal": m.nota_personal,
-            "anio": getattr(m, "anio", None),
-            "tipo": m.tipo
-        }
-        for m in result
-    ]
+    # TODO: Reimplementar usando usuario_media para datos por usuario
+    return []  # Temporalmente vacío hasta reimplementar con sistema multiusuario
 
 def get_generos(db: Session):
     import unicodedata
     def normalize(s):
         return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
-    medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
+    # TODO: Reimplementar sin dependencia de pendiente
+    medias = db.query(models.Media).all()
     genero_count = {}
     genero_original = {}
     genero_notas = {}
@@ -386,14 +412,31 @@ def healthcheck():
     }
 
 @app.get("/medias/{media_id}", response_model=schemas.Media)
-def read_media(media_id: int, db: Session = Depends(get_db)):
-    db_media = crud.get_media(db, media_id=media_id)
-    if db_media is None:
+def read_media(media_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    # Primero verificar que el media pertenece al usuario
+    media = db.query(models.Media).filter(
+        models.Media.id == media_id,
+        models.Media.usuario_id == current_user.id
+    ).first()
+    
+    if media is None:
         raise HTTPException(status_code=404, detail="Media not found")
+    
+    # Obtener el media completo con tags del usuario
+    db_media = crud.get_media(db, media_id=media_id, usuario_id=current_user.id)
     return db_media
 
 @app.get("/medias/{media_id}/similares", response_model=List[schemas.Media])
-def get_similares(media_id: int, db: Session = Depends(get_db)):
+def get_similares(media_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    # Verificar que el media pertenece al usuario
+    media = db.query(models.Media).filter(
+        models.Media.id == media_id,
+        models.Media.usuario_id == current_user.id
+    ).first()
+    
+    if media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
     similares = crud.get_similares_para_media(db, media_id, n=24)
     return similares
 
@@ -412,22 +455,49 @@ def delete_media(media_id: int, db: Session = Depends(get_db)):
     return db_media
 
 @app.patch("/medias/{media_id}/pendiente", response_model=schemas.Media)
-def update_pendiente(media_id: int, pendiente: bool, db: Session = Depends(get_db)):
+def update_pendiente(media_id: int, pendiente: bool, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    # Verificar que el media pertenece al usuario autenticado
+    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
     db_media = crud.update_media_pendiente(db, media_id, pendiente)
     if db_media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     return db_media
 
 @app.patch("/medias/{media_id}/favorito", response_model=schemas.Media)
-def update_favorito(media_id: int, favorito: bool, db: Session = Depends(get_db)):
+def update_favorito(media_id: int, favorito: bool, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    # Verificar que el media pertenece al usuario autenticado
+    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
     db_media = crud.update_media_favorito(db, media_id, favorito)
     if db_media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     return db_media
 
 @app.patch("/medias/{media_id}/anotacion_personal", response_model=schemas.Media)
-def update_anotacion_personal(media_id: int, anotacion_personal: str = Body(...), db: Session = Depends(get_db)):
+def update_anotacion_personal(media_id: int, anotacion_personal: str = Body(...), db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    # Verificar que el media pertenece al usuario autenticado
+    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
     db_media = crud.update_media_anotacion_personal(db, media_id, anotacion_personal)
+    if db_media is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+    return db_media
+
+@app.patch("/medias/{media_id}/nota_personal", response_model=schemas.Media)
+def update_nota_personal(media_id: int, nota_personal: float = Body(...), db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    # Verificar que el media pertenece al usuario autenticado
+    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
+    db_media = crud.update_media_nota_personal(db, media_id, nota_personal)
     if db_media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     return db_media
@@ -441,29 +511,62 @@ def read_favoritos(skip: int = 0, limit: int = 24, db: Session = Depends(get_db)
     return crud.get_favoritos(db, skip=skip, limit=limit)
 
 @app.get("/tags", response_model=List[schemas.Tag])
-def get_tags(db: Session = Depends(get_db)):
-    return crud.get_tags(db)
+def get_tags(db: Session = Depends(get_db), current_user: User = Depends(current_user_optional)):
+    """
+    Obtiene los tags disponibles del usuario autenticado. Sin autenticación devuelve lista vacía.
+    """
+    if current_user is None:
+        return []
+    return crud.get_tags(db, usuario_id=current_user.id)
 
 @app.post("/tags", response_model=schemas.Tag)
-def create_tag(tag: schemas.TagCreate, db: Session = Depends(get_db)):
-    return crud.create_tag(db, tag)
+def create_tag(tag: schemas.TagCreate, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    try:
+        return crud.create_tag(db, tag, usuario_id=current_user.id)
+    except Exception as e:
+        msg = str(e)
+        lower = msg.lower()
+        status_code = 409 if "existe un tag" in lower else 400
+        raise HTTPException(status_code=status_code, detail=msg)
 
 @app.post("/medias/{media_id}/tags/{tag_id}", response_model=schemas.Media)
-def add_tag_to_media(media_id: int, tag_id: int, db: Session = Depends(get_db)):
-    media = crud.add_tag_to_media(db, media_id, tag_id)
+def add_tag_to_media(media_id: int, tag_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    # Verificar que tanto el media como el tag pertenecen al usuario autenticado
+    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
+    tag = db.query(models.Tag).filter(models.Tag.id == tag_id, models.Tag.usuario_id == current_user.id).first()
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    
+    media = crud.add_tag_to_media(db, media_id, tag_id, current_user.id)
     if not media:
         raise HTTPException(status_code=404, detail="Media o Tag no encontrado")
     return media
 
 @app.delete("/medias/{media_id}/tags/{tag_id}", response_model=schemas.Media)
-def remove_tag_from_media(media_id: int, tag_id: int, db: Session = Depends(get_db)):
-    media = crud.remove_tag_from_media(db, media_id, tag_id)
+def remove_tag_from_media(media_id: int, tag_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    # Verificar que tanto el media como el tag pertenecen al usuario autenticado
+    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
+    tag = db.query(models.Tag).filter(models.Tag.id == tag_id, models.Tag.usuario_id == current_user.id).first()
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    media = crud.remove_tag_from_media(db, media_id, tag_id, current_user.id)
     if not media:
         raise HTTPException(status_code=404, detail="Media o Tag no encontrado")
     return media
 
 @app.delete("/tags/{tag_id}", response_model=schemas.Tag)
-def delete_tag(tag_id: int, db: Session = Depends(get_db)):
+def delete_tag(tag_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    # Verificar que el tag pertenece al usuario autenticado
+    tag = db.query(models.Tag).filter(models.Tag.id == tag_id, models.Tag.usuario_id == current_user.id).first()
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    
     db_tag = crud.delete_tag(db, tag_id)
     if db_tag is None:
         raise HTTPException(status_code=404, detail="Tag not found")
@@ -780,22 +883,29 @@ def tmdb_watch_providers(media_type: str, tmdb_id: int):
 
 @app.get("/tmdb/{media_type}/{tmdb_id}/external_ids")
 def tmdb_external_ids(media_type: str, tmdb_id: int):
-    if media_type not in ("movie", "tv"):
-        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
+    # Accept person as well to avoid route conflicts with /tmdb/person/{id}/external_ids
+    if media_type not in ("movie", "tv", "person"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie', 'tv' or 'person'")
     headers = get_tmdb_auth_headers()
-    url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/external_ids"
+    if media_type == "person":
+        url = f"{TMDB_BASE_URL}/person/{tmdb_id}/external_ids"
+    else:
+        url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/external_ids"
     r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail="Error al obtener external_ids de TMDb")
     return r.json()
 
-# Lightweight proxy endpoints to avoid exposing client credentials
 @app.get("/tmdb/{media_type}/{tmdb_id}")
 def tmdb_detail(media_type: str, tmdb_id: int, language: str = Query("es-ES")):
-    if media_type not in ("movie", "tv"):
-        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
+    # Accept person as well to avoid conflicts with /tmdb/person/{id}
+    if media_type not in ("movie", "tv", "person"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie', 'tv' or 'person'")
     headers = get_tmdb_auth_headers()
-    url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}"
+    if media_type == "person":
+        url = f"{TMDB_BASE_URL}/person/{tmdb_id}"
+    else:
+        url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}"
     r = requests.get(url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail="Error al obtener detalle de TMDb")
@@ -810,6 +920,20 @@ def tmdb_collection(collection_id: int, language: str = Query("es-ES")):
         raise HTTPException(status_code=502, detail="Error al obtener colección de TMDb")
     return r.json()
 
+
+# Endpoint para obtener los créditos (reparto y equipo) de una película o serie desde TMDb
+@app.get("/tmdb/{media_type}/{tmdb_id}/credits")
+def tmdb_credits(media_type: str, tmdb_id: int):
+    """Proxy para obtener créditos (cast y crew) de una película o serie desde TMDb"""
+    if media_type not in ("movie", "tv"):
+        raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}/credits"
+    r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener créditos de TMDb")
+    return r.json()
+
 @app.get("/tmdb/{media_type}/{tmdb_id}/recommendations")
 def tmdb_recommendations(media_type: str, tmdb_id: int, language: str = Query("es-ES"), page: int = Query(1)):
     if media_type not in ("movie", "tv"):
@@ -821,48 +945,52 @@ def tmdb_recommendations(media_type: str, tmdb_id: int, language: str = Query("e
         raise HTTPException(status_code=502, detail="Error al obtener recomendaciones de TMDb")
     return r.json()
 
-@app.get("/listas", response_model=List[schemas.Lista])
-def get_listas(db: Session = Depends(get_db)):
-    return crud.get_listas(db)
+from sqlalchemy import or_
+# --- Person endpoints (TMDb proxy) ---
+# Endpoint: Medias vistas con este actor (por tmdb_id de persona)
+@app.get("/medias/by_actor/{person_tmdb_id}", response_model=List[schemas.Media])
+def get_medias_by_actor(person_tmdb_id: int, db: Session = Depends(get_db)):
+    """
+    Devuelve todas las medias donde el actor con ese TMDb ID aparece en el campo elenco (como id o nombre).
+    Busca coincidencias en el campo elenco (que es texto, puede contener ids o nombres).
+    """
+    # El campo elenco puede ser: "Nombre1 (id1), Nombre2 (id2), ..."
+    # Buscamos por id entre paréntesis o por nombre exacto si no hay id
+    # Ejemplo: elenco = "Tom Hanks (31), Tim Allen (12898)"
+    # Para person_tmdb_id=31, buscar "(31)" en elenco
+    pattern = f"({person_tmdb_id})"
+    query = db.query(models.Media).filter(models.Media.elenco.ilike(f"%{pattern}%"))
+    return query.all()
+@app.get("/tmdb/person/{person_id}")
+def tmdb_person_detail(person_id: int, language: str = Query("es-ES")):
+    """Proxy para obtener detalles de una persona (actor/director) desde TMDb"""
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/person/{person_id}"
+    r = requests.get(url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener detalles de la persona en TMDb")
+    return r.json()
 
-@app.get("/listas/{lista_id}", response_model=schemas.Lista)
-def get_lista(lista_id: int, db: Session = Depends(get_db)):
-    lista = crud.get_lista(db, lista_id)
-    if not lista:
-        raise HTTPException(status_code=404, detail="Lista no encontrada")
-    return lista
+@app.get("/tmdb/person/{person_id}/combined_credits")
+def tmdb_person_combined_credits(person_id: int, language: str = Query("es-ES")):
+    """Proxy para obtener créditos combinados (películas y series) de una persona en TMDb"""
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/person/{person_id}/combined_credits"
+    # language suele aplicarse a los títulos de movie/tv en los créditos
+    r = requests.get(url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener combined_credits de la persona en TMDb")
+    return r.json()
 
-@app.post("/listas", response_model=schemas.Lista, status_code=status.HTTP_201_CREATED)
-def create_lista(lista: schemas.ListaCreate, db: Session = Depends(get_db)):
-    return crud.create_lista(db, lista)
-
-@app.delete("/listas/{lista_id}", response_model=schemas.Lista)
-def delete_lista(lista_id: int, db: Session = Depends(get_db)):
-    lista = crud.delete_lista(db, lista_id)
-    if not lista:
-        raise HTTPException(status_code=404, detail="Lista no encontrada")
-    return lista
-
-@app.put("/listas/{lista_id}", response_model=schemas.Lista)
-def update_lista(lista_id: int, nombre: str = Body(None), descripcion: str = Body(None), db: Session = Depends(get_db)):
-    lista = crud.update_lista(db, lista_id, nombre, descripcion)
-    if not lista:
-        raise HTTPException(status_code=404, detail="Lista no encontrada")
-    return lista
-
-@app.post("/listas/{lista_id}/add_media/{media_id}", response_model=schemas.Lista)
-def add_media_to_lista(lista_id: int, media_id: int, db: Session = Depends(get_db)):
-    lista = crud.add_media_to_lista(db, lista_id, media_id)
-    if not lista:
-        raise HTTPException(status_code=404, detail="Lista o media no encontrada")
-    return lista
-
-@app.delete("/listas/{lista_id}/remove_media/{media_id}", response_model=schemas.Lista)
-def remove_media_from_lista(lista_id: int, media_id: int, db: Session = Depends(get_db)):
-    lista = crud.remove_media_from_lista(db, lista_id, media_id)
-    if not lista:
-        raise HTTPException(status_code=404, detail="Lista o media no encontrada")
-    return lista
+@app.get("/tmdb/person/{person_id}/external_ids")
+def tmdb_person_external_ids(person_id: int):
+    """Proxy para obtener IDs externos (Twitter/Instagram/FB) de una persona en TMDb"""
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/person/{person_id}/external_ids"
+    r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener external_ids de la persona en TMDb")
+    return r.json()
 
 # --- ENDPOINTS PARA TRADUCCIONES ---
 
@@ -972,7 +1100,7 @@ def clear_translation_cache(
 def get_dynamic_poster(
     tmdb_id: int,
     media_type: str = Query(..., description="movie o tv"),
-    language: str = Query("es-ES", description="Idioma para la portada (ej: es-ES, en-US)"),
+    language: str = Query("es-ES", description="Idioma para la portada (ej: es-ES, en-US, pt-PT, fr-FR, de-DE)"),
     db: Session = Depends(get_db)
 ):
     """
@@ -980,8 +1108,13 @@ def get_dynamic_poster(
     Busca primero en cache, luego en la base de datos, luego en TMDb si no existe.
     """
     try:
-        # Convertir language a formato simple (es o en)
-        lang_code = "es" if language.startswith("es") else "en"
+        # Convertir language a formato simple (es, en, pt, fr, de)
+        if language.startswith("es"): lang_code = "es"
+        elif language.startswith("en"): lang_code = "en"
+        elif language.startswith("pt"): lang_code = "pt"
+        elif language.startswith("fr"): lang_code = "fr"
+        elif language.startswith("de"): lang_code = "de"
+        else: lang_code = "en"
         
         # Generar clave de cache
         cache_key = get_cache_key(None, lang_code, tmdb_id)
@@ -1002,8 +1135,7 @@ def get_dynamic_poster(
             # Query optimizada: buscar español e inglés en una sola consulta
             if lang_code == "es" and media.imagen:
                 poster_url = media.imagen
-            
-            # Si el idioma es inglés, buscar en content_translations con índice optimizado
+            # Si idioma es inglés reutiliza lógica existente
             if not poster_url and lang_code == "en":
                 translation = db.query(models.ContentTranslation).filter(
                     models.ContentTranslation.media_id == media.id,
@@ -1011,10 +1143,19 @@ def get_dynamic_poster(
                     models.ContentTranslation.poster_url.isnot(None),
                     models.ContentTranslation.poster_url != ""
                 ).first()
-                
                 if translation:
                     poster_url = translation.poster_url
-            
+            # Intentar traducciones adicionales (pt, fr, de)
+            if not poster_url and lang_code in ("pt", "fr", "de"):
+                lang_full_map = {"pt": "pt-PT", "fr": "fr-FR", "de": "de-DE"}
+                translation = db.query(models.ContentTranslation).filter(
+                    models.ContentTranslation.media_id == media.id,
+                    models.ContentTranslation.language_code == lang_full_map[lang_code],
+                    models.ContentTranslation.poster_url.isnot(None),
+                    models.ContentTranslation.poster_url != ""
+                ).first()
+                if translation:
+                    poster_url = translation.poster_url
             # Si no hay poster en la BD, hacer llamada a TMDb y guardar
             if not poster_url:
                 tmdb_poster = get_best_poster(tmdb_id, media_type, language)
@@ -1033,8 +1174,19 @@ def get_dynamic_poster(
                             translation.poster_url = poster_url
                             translation.updated_at = func.now()
                             db.commit()
+                    elif lang_code in ("pt", "fr", "de"):
+                        # Actualizar/crear traducción específica si existe fila
+                        lang_full_map = {"pt": "pt-PT", "fr": "fr-FR", "de": "de-DE"}
+                        translation = db.query(models.ContentTranslation).filter(
+                            models.ContentTranslation.media_id == media.id,
+                            models.ContentTranslation.language_code == lang_full_map[lang_code]
+                        ).first()
+                        if translation and (not translation.poster_url or translation.poster_url.strip() == ""):
+                            translation.poster_url = poster_url
+                            translation.updated_at = func.now()
+                            db.commit()
                     else:
-                        # Actualizar imagen en tabla media para español
+                        # Español
                         if not media.imagen or media.imagen.strip() == "":
                             media.imagen = poster_url
                             db.commit()
@@ -1058,7 +1210,7 @@ def get_dynamic_poster(
 @app.get("/posters-optimized")
 def get_optimized_posters(
     media_ids: str = Query(..., description="Lista de IDs de media separados por comas"),
-    language: str = Query("es", description="Idioma preferido (es o en)"),
+    language: str = Query("es", description="Idioma preferido (es, en, pt, fr, de)"),
     db: Session = Depends(get_db)
 ):
     """
@@ -1070,16 +1222,13 @@ def get_optimized_posters(
         if not ids:
             return {"posters": {}}
 
-        # Normalizar idioma
+        # Normalizar idioma ampliado
         lang = language.lower()
-        if lang.startswith("en"):
-            lang_code = "en"
-            lang_db = "en-US"
-            tmdb_lang = "en-US"
-        else:
-            lang_code = "es"
-            lang_db = "es-ES"
-            tmdb_lang = "es-ES"
+        if lang.startswith("en"): lang_code, lang_db, tmdb_lang = "en", "en-US", "en-US"
+        elif lang.startswith("pt"): lang_code, lang_db, tmdb_lang = "pt", "pt-PT", "pt-PT"
+        elif lang.startswith("fr"): lang_code, lang_db, tmdb_lang = "fr", "fr-FR", "fr-FR"
+        elif lang.startswith("de"): lang_code, lang_db, tmdb_lang = "de", "de-DE", "de-DE"
+        else: lang_code, lang_db, tmdb_lang = "es", "es-ES", "es-ES"
 
         # Generar claves de cache para todos los medias
         cache_keys = {media_id: get_cache_key(media_id, lang_code) for media_id in ids}
@@ -1114,6 +1263,15 @@ def get_optimized_posters(
                     models.ContentTranslation.poster_url != ""
                 ).all()
                 translations_map = {t.media_id: t.poster_url for t in translations}
+            elif lang_code in ("pt", "fr", "de"):
+                lang_full_map = {"pt": "pt-PT", "fr": "fr-FR", "de": "de-DE"}
+                translations = db.query(models.ContentTranslation).filter(
+                    models.ContentTranslation.media_id.in_(ids_to_fetch),
+                    models.ContentTranslation.language_code == lang_full_map[lang_code],
+                    models.ContentTranslation.poster_url.isnot(None),
+                    models.ContentTranslation.poster_url != ""
+                ).all()
+                translations_map = {t.media_id: t.poster_url for t in translations}
 
             # Procesar cada media
             new_cache_data = {}
@@ -1127,6 +1285,8 @@ def get_optimized_posters(
                     poster_url = translations_map.get(media.id)
                 elif lang_code == "es" and media.imagen and str(media.imagen).strip() != "":
                     poster_url = media.imagen
+                elif lang_code in ("pt", "fr", "de"):
+                    poster_url = translations_map.get(media.id)
 
                 # Si no hay poster en la BD, preparar para TMDb
                 if (not poster_url or str(poster_url).strip() == "") and media.tmdb_id:
@@ -1145,22 +1305,28 @@ def get_optimized_posters(
                     tmdb_poster = get_best_poster(tmdb_id, tipo, tmdb_lang)
                     if tmdb_poster:
                         poster_url = tmdb_poster
-                        
-                        # Guardar en BD según idioma
                         if lang_code == "en":
-                            # Solo actualizar si ya existe una traducción
+                            # Solo actualizar si ya existe una translation (no crear fila nueva)
                             translation = db.query(models.ContentTranslation).filter(
                                 models.ContentTranslation.media_id == media_id,
                                 models.ContentTranslation.language_code == "en-US"
                             ).first()
-                            if translation and (not getattr(translation, 'poster_url', None) or str(translation.poster_url).strip() == ""):
+                            if translation and hasattr(translation, 'poster_url'):
                                 translation.poster_url = poster_url
                                 translation.updated_at = func.now()
-                        else:
-                            # Actualizar solo si no existe imagen en media o está vacía
+                        elif lang_code == "es":
+                            # Español: solo actualizar si no hay imagen
                             media = next((m for m in medias if m.id == media_id), None)
-                            if media and (not media.imagen or str(media.imagen).strip() == ""):
+                            if media and (not media.imagen or media.imagen.strip() == ""):
                                 media.imagen = poster_url
+                        elif lang_code in ("pt", "fr", "de"):
+                            lang_full_map = {"pt": "pt-PT", "fr": "fr-FR", "de": "de-DE"}
+                            translation = db.query(models.ContentTranslation).filter(
+                                models.ContentTranslation.media_id == media_id,
+                                models.ContentTranslation.language_code == lang_full_map[lang_code]
+                            ).first()
+                            if translation and (not translation.poster_url or translation.poster_url.strip() == ""):
+                                translation.poster_url = poster_url
                     else:
                         # No se encontró en TMDb, usar imagen original
                         media = next((m for m in medias if m.id == media_id), None)
@@ -1201,6 +1367,23 @@ def clear_poster_cache_endpoint():
         "message": f"Cache cleared successfully. {result['cleared']} entries removed.",
         "stats": result["cache_stats"]
     }
+
+# Incluir rutas de autenticación (ANTES del catch-all)
+app.include_router(
+    fastapi_users.get_auth_router(auth_backend),
+    prefix="/auth/jwt",
+    tags=["auth"],
+)
+app.include_router(
+    fastapi_users.get_register_router(UserRead, UserCreate),
+    prefix="/auth",
+    tags=["auth"],
+)
+app.include_router(
+    fastapi_users.get_users_router(UserRead, UserRead),
+    prefix="/users",
+    tags=["users"],
+)
 
 # --- Al final del archivo: servir frontend React para rutas no API ---
 @app.get("/", include_in_schema=False)
