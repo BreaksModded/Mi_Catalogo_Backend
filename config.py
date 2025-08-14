@@ -59,3 +59,20 @@ def get_lan_origin_regex():
     # Allow typical LAN ranges and localhost on common dev ports
     # 192.168.x.x, 10.x.x.x, 172.16-31.x.x + localhost/127.0.0.1 on 3000 or 5173
     return r"http://((192\.168|10\.|172\.(1[6-9]|2[0-9]|3[01]))\.(\d{1,3})\.(\d{1,3})|localhost|127\.0\.0\.1):(3000|5173)"
+
+# Email Configuration
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "diegobeep@gmail.com")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "paajrdtvrmyfkqya")
+SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+
+# Email settings
+EMAIL_FROM = os.getenv("EMAIL_FROM", SMTP_USERNAME or "noreply@example.com")
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Mi Catálogo")
+
+# Frontend URL for password reset links
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+# Development mode (for testing without real email sending)
+EMAIL_DEVELOPMENT_MODE = os.getenv("EMAIL_DEVELOPMENT_MODE", "false").lower() == "true"

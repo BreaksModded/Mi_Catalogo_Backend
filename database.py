@@ -110,17 +110,18 @@ def optimize_search_indexes():
             """))
 
             # Índices BTREE para filtros y ordenaciones frecuentes
+            # Índice para fecha_agregado en usuario_media (reemplaza fecha_creacion)
             conn.execute(text("""
-                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_fecha_creacion_desc 
-                ON media (fecha_creacion DESC)
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_usuario_media_fecha_agregado_desc 
+                ON usuario_media (fecha_agregado DESC)
             """))
             conn.execute(text("""
-                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_pendiente 
-                ON media (pendiente)
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_usuario_media_pendiente 
+                ON usuario_media (pendiente)
             """))
             conn.execute(text("""
-                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_favorito 
-                ON media (favorito)
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_usuario_media_favorito 
+                ON usuario_media (favorito)
             """))
             conn.execute(text("""
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_anio 

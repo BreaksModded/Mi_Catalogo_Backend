@@ -2,6 +2,10 @@ import models
 import database
 import crud
 import schemas
+import os
+import time
+import requests
+import unicodedata
 from translation_service import TranslationService, get_translation_service
 from poster_cache import (
     get_poster_cache, 
@@ -17,20 +21,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, text
-import requests
-import time
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-import os
+from genre_utils import get_consistent_name
 from typing import List
 import unicodedata
 from bs4 import BeautifulSoup
 from config import TMDB_BASE_URL, REQUEST_TIMEOUT, get_tmdb_auth_headers, get_allowed_origins, get_lan_origin_regex
 from fastapi_users import FastAPIUsers
-from fastapi_users.authentication import JWTStrategy, AuthenticationBackend, CookieTransport
+from fastapi_users.authentication import JWTStrategy, AuthenticationBackend, BearerTransport
 from fastapi_users.router import get_auth_router, get_register_router
 from users import User
-from user_manager import get_user_manager, SECRET
+from user_manager import get_user_manager, SECRET, UserManager
 from user_manager import get_user_db
 from schemas import UserRead, UserCreate
 
@@ -55,19 +57,14 @@ app.add_middleware(
 )
 
 # Configuración de autenticación
-cookie_transport = CookieTransport(
-    cookie_name="auth",
-    cookie_max_age=3600,
-    cookie_secure=False,   # Permitir cookies en http para desarrollo local
-    cookie_samesite="lax" # Permitir navegación entre páginas en localhost
-)
+bearer_transport = BearerTransport(tokenUrl="auth/jwt/login")
 
 def get_jwt_strategy() -> JWTStrategy:
     return JWTStrategy(secret=SECRET, lifetime_seconds=60 * 60 * 24)
 
 auth_backend = AuthenticationBackend(
     name="jwt",
-    transport=cookie_transport,
+    transport=bearer_transport,
     get_strategy=get_jwt_strategy,
 )
 
@@ -156,32 +153,75 @@ def search_medias(
     limit: int = 24,
     include_total: bool = Query(False, description="Si true, añade X-Total-Count y puede envolver en {items,total}"),
     db: Session = Depends(get_db),
-    response: Response = None
+    response: Response = None,
+    current_user: User = Depends(current_user_optional)  # Autenticación opcional
 ):
-    """Efficient search using SQL with ASCII-normalized LIKE across key fields.
-    Falls back to in-Python filter if DB does not support unaccent.
-    """
+    """Optimized search using direct SQL queries for better performance."""
     term = (q or "").strip()
     if not term:
         return []
 
-    # Try SQL-level case-insensitive search; simple LIKE on multiple columns
-    like = f"%{term}%"
-    query = db.query(models.Media).filter(
+    # Si no hay usuario autenticado, devolver lista vacía
+    if current_user is None:
+        if response is not None:
+            response.headers["X-Total-Count"] = "0"
+        return []
+
+    # Búsqueda optimizada usando SQL directamente
+    search_term = f"%{term.lower()}%"
+    
+    # Query SQL optimizada que busca directamente en la base de datos
+    # Usamos outerjoin para cargar también los datos personales
+    query = db.query(models.Media).outerjoin(
+        models.UsuarioMedia, 
+        (models.Media.id == models.UsuarioMedia.media_id) & 
+        (models.UsuarioMedia.usuario_id == current_user.id)
+    ).filter(
+        # Solo medias que pertenecen al usuario
+        models.UsuarioMedia.usuario_id == current_user.id
+    ).filter(
+        # Búsqueda en los campos de texto
         or_(
-            models.Media.titulo.ilike(like),
-            models.Media.titulo_ingles.ilike(like),
-            models.Media.elenco.ilike(like),
-            models.Media.director.ilike(like),
+            func.lower(models.Media.titulo).like(search_term),
+            func.lower(models.Media.titulo_ingles).like(search_term),
+            func.lower(models.Media.elenco).like(search_term),
+            func.lower(models.Media.director).like(search_term)
         )
     )
-    total = None
+    
+    # Contar resultados totales si es necesario
     if include_total:
         total = query.count()
         if response is not None:
             response.headers["X-Total-Count"] = str(total)
-    # Apply pagination
-    items = query.offset(max(0, skip)).limit(max(1, min(limit, 200))).all()
+    
+    # Aplicar paginación y ejecutar consulta
+    items = query.offset(skip).limit(limit).all()
+    
+    # Agregar datos personales de usuario_media a cada item
+    if items:
+        for media in items:
+            # Buscar datos personales directamente en la base de datos
+            usuario_media = db.query(models.UsuarioMedia).filter(
+                models.UsuarioMedia.media_id == media.id,
+                models.UsuarioMedia.usuario_id == current_user.id
+            ).first()
+            
+            if usuario_media:
+                # Añadir campos temporales al objeto media para el serializado
+                media.favorito = usuario_media.favorito or False
+                media.pendiente = usuario_media.pendiente or False
+                media.nota_personal = usuario_media.nota_personal if usuario_media.nota_personal is not None else None
+                media.anotacion_personal = usuario_media.anotacion_personal
+                media.fecha_agregado = usuario_media.fecha_agregado if hasattr(usuario_media, 'fecha_agregado') else None
+            else:
+                # Valores por defecto si no hay datos personales
+                media.favorito = False
+                media.pendiente = False
+                media.nota_personal = None
+                media.anotacion_personal = None
+                media.fecha_agregado = None
+    
     return items
 
 @app.on_event("startup")
@@ -199,7 +239,13 @@ def read_medias(
     min_year: int = None,
     max_year: int = None,
     min_nota: float = None,
+    max_nota: float = None,
+    min_nota_personal: float = None,
+    max_nota_personal: float = None,
+    favorito: bool = None,
+    pendiente: bool = None,
     tmdb_id: int = None,
+    exclude_ids: str | None = Query(None, description="Comma-separated IDs to exclude from results"),
     include_total: bool = Query(False, description="Si true, añade X-Total-Count a la respuesta"),
     db: Session = Depends(get_db),
     response: Response = None,
@@ -218,18 +264,63 @@ def read_medias(
             return []
         
         # Solo obtener medias del usuario actual
+        exclude_list = []
+        if exclude_ids:
+            try:
+                exclude_list = [int(x) for x in exclude_ids.split(',') if x.strip().isdigit()]
+            except Exception:
+                exclude_list = []
+
         base_query = crud.get_medias_query(
             db, skip=skip, limit=limit, order_by=order_by, tipo=tipo,
             genero=genero, min_year=min_year, max_year=max_year,
-            min_nota=min_nota, tag_id=tag_id, tmdb_id=tmdb_id,
-            usuario_id=current_user.id  # Filtrar por usuario
+            min_nota=min_nota, max_nota=max_nota, min_nota_personal=min_nota_personal, max_nota_personal=max_nota_personal,
+            favorito=favorito, pendiente=pendiente, tag_id=tag_id, tmdb_id=tmdb_id,
+            usuario_id=current_user.id,  # Filtrar por usuario
+            exclude_ids=exclude_list
         )
-        total = None
+        
         if include_total:
-            total = base_query.count()
+            # Para el total, usamos la query sin paginación
+            total_query = crud.get_medias_query(
+                db, skip=0, limit=99999, order_by=order_by, tipo=tipo,
+                genero=genero, min_year=min_year, max_year=max_year,
+                min_nota=min_nota, max_nota=max_nota, min_nota_personal=min_nota_personal, max_nota_personal=max_nota_personal,
+                favorito=favorito, pendiente=pendiente, tag_id=tag_id, tmdb_id=tmdb_id,
+                usuario_id=current_user.id
+            )
+            total = total_query.count()
             if response is not None:
                 response.headers["X-Total-Count"] = str(total)
+        
         result = base_query.offset(skip).limit(limit).all()
+        
+        # Cargar manualmente los datos personales de UsuarioMedia para cada resultado
+        if result and current_user:
+            media_ids = [media.id for media in result]
+            user_data = db.query(models.UsuarioMedia).filter(
+                models.UsuarioMedia.media_id.in_(media_ids),
+                models.UsuarioMedia.usuario_id == current_user.id
+            ).all()
+            
+            # Crear un diccionario para mapear rápido
+            user_data_map = {um.media_id: um for um in user_data}
+            
+            # Aplicar datos personales a cada media
+            for media in result:
+                um = user_data_map.get(media.id)
+                if um:
+                    media.favorito = um.favorito or False
+                    media.pendiente = um.pendiente or False
+                    media.nota_personal = um.nota_personal if um.nota_personal is not None else None
+                    media.anotacion_personal = um.anotacion_personal
+                    media.fecha_agregado = um.fecha_agregado if hasattr(um, 'fecha_agregado') else None
+                else:
+                    media.favorito = False
+                    media.pendiente = False
+                    media.nota_personal = None
+                    media.anotacion_personal = None
+        
         return result
     except Exception as e:
         print("ERROR EN /medias:", e)
@@ -241,10 +332,27 @@ import unicodedata
 @app.get("/medias/count")
 def count_medias(
     tipo: str = None,
+    pendiente: bool = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(current_user_required)
 ):
-    query = db.query(models.Media).filter(models.Media.usuario_id == current_user.id)
+    # Query con JOIN a usuario_media para filtros personales
+    query = db.query(models.Media).join(
+        models.UsuarioMedia,
+        (models.Media.id == models.UsuarioMedia.media_id) & 
+        (models.UsuarioMedia.usuario_id == current_user.id)
+    )
+    
+    # Filtrar por pendiente si se especifica
+    if pendiente is not None:
+        if pendiente:
+            query = query.filter(models.UsuarioMedia.pendiente == True)
+        else:
+            query = query.filter(
+                (models.UsuarioMedia.pendiente == False) | 
+                (models.UsuarioMedia.pendiente.is_(None))
+            )
+    
     if tipo:
         def normalize(s):
             return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
@@ -258,38 +366,90 @@ def top5_medias(
     db: Session = Depends(get_db),
     current_user: User = Depends(current_user_required)
 ):
-    # TODO: Reimplementar usando usuario_media para datos por usuario
-    return []  # Temporalmente vacío hasta reimplementar con sistema multiusuario
+    # Query con JOIN a usuario_media para obtener notas personales
+    results = db.query(models.Media, models.UsuarioMedia).join(
+        models.UsuarioMedia,
+        models.Media.id == models.UsuarioMedia.media_id
+    ).filter(
+        models.UsuarioMedia.usuario_id == current_user.id,
+        models.UsuarioMedia.nota_personal.isnot(None),
+        models.UsuarioMedia.pendiente == False
+    )
+    
+    # Filtrar por tipo
+    if tipo:
+        def normalize(s):
+            return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
+        tipo_norm = normalize(tipo)
+        results = results.filter(
+            func.lower(func.replace(func.replace(models.Media.tipo, 'í', 'i'), 'é', 'e')) == tipo_norm
+        )
+    
+    # Ordenar por nota personal descendente y obtener top 5
+    top_results = results.order_by(models.UsuarioMedia.nota_personal.desc()).limit(5).all()
+    
+    # Procesar resultados para incluir datos personales
+    medias = []
+    for media, usuario_media in top_results:
+        # Agregar datos personales a cada media
+        media.nota_personal = usuario_media.nota_personal
+        media.favorito = usuario_media.favorito or False
+        media.pendiente = usuario_media.pendiente or False
+        media.anotacion_personal = usuario_media.anotacion_personal
+        media.fecha_agregado = usuario_media.fecha_agregado
+        medias.append(media)
+    
+    return medias
 
-def get_generos(db: Session):
+def get_generos(db: Session, user: User):
     import unicodedata
     def normalize(s):
         return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
-    # TODO: Reimplementar sin dependencia de pendiente
-    medias = db.query(models.Media).all()
+    
+    # Obtener medias vistas por el usuario (no pendientes)
+    results = db.query(models.Media, models.UsuarioMedia).join(
+        models.UsuarioMedia, models.Media.id == models.UsuarioMedia.media_id
+    ).filter(
+        models.UsuarioMedia.usuario_id == user.id,
+        models.UsuarioMedia.pendiente == False
+    ).all()
+    
     genero_count = {}
     genero_original = {}
     genero_notas = {}
-    for m in medias:
-        generos = (getattr(m, 'genero', '') or '').split(',')
+    
+    for media, usuario_media in results:
+        generos = (getattr(media, 'genero', '') or '').split(',')
         generos = [g.strip() for g in generos if g.strip()]
         for g in generos:
             g_norm = normalize(g)
             genero_count[g_norm] = genero_count.get(g_norm, 0) + 1
             if g_norm not in genero_original:
                 genero_original[g_norm] = g  # Guarda el nombre original
-            if m.nota_personal is not None:
-                genero_notas.setdefault(g_norm, []).append(m.nota_personal)
+            if usuario_media.nota_personal is not None:
+                genero_notas.setdefault(g_norm, []).append(usuario_media.nota_personal)
     return genero_count, genero_original, genero_notas
 
 @app.get("/medias/distribucion_generos")
-def distribucion_generos(db: Session = Depends(get_db)):
-    genero_count, genero_original, _ = get_generos(db)
-    return {genero_original[g]: genero_count[g] for g in genero_count}
+def distribucion_generos(user: User = Depends(current_user_required), db: Session = Depends(get_db)):
+    genero_count, genero_original, _ = get_generos(db, user)
+    # Consolidar géneros usando el mapeo centralizado (genre_utils)
+    generos_consolidados = {}
+    for g_norm, count in genero_count.items():
+        # Tomar el nombre original almacenado y normalizar mediante genre_utils
+        original_name = genero_original[g_norm]
+        consistent_name = get_consistent_name(original_name) or original_name.title()
+        
+        if consistent_name in generos_consolidados:
+            generos_consolidados[consistent_name] += count
+        else:
+            generos_consolidados[consistent_name] = count
+    
+    return generos_consolidados
 
 @app.get("/medias/generos_vistos")
-def generos_vistos(db: Session = Depends(get_db)):
-    genero_count, genero_original, genero_notas = get_generos(db)
+def generos_vistos(user: User = Depends(current_user_required), db: Session = Depends(get_db)):
+    genero_count, genero_original, genero_notas = get_generos(db, user)
     # Género más visto
     mas_visto = None
     mas_visto_count = 0
@@ -314,42 +474,65 @@ def generos_vistos(db: Session = Depends(get_db)):
     }
 
 @app.get("/medias/peor_pelicula", response_model=schemas.Media)
-def peor_pelicula(db: Session = Depends(get_db)):
+def peor_pelicula(user: User = Depends(current_user_required), db: Session = Depends(get_db)):
     def normalize(s):
         return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
     tipo_norm = 'pelicula'
-    query = db.query(models.Media).filter(
-        models.Media.pendiente == False,
-        models.Media.nota_personal != None
-    )
-    ids = [m.id for m in query if normalize(m.tipo) == tipo_norm]
-    result = db.query(models.Media).filter(
-        models.Media.id.in_(ids)
-    ).order_by(models.Media.nota_personal.asc()).first()
+    result = db.query(models.Media, models.UsuarioMedia).join(
+        models.UsuarioMedia, models.Media.id == models.UsuarioMedia.media_id
+    ).filter(
+        models.UsuarioMedia.usuario_id == user.id,
+        models.UsuarioMedia.pendiente == False,
+        models.UsuarioMedia.nota_personal != None
+    ).filter(
+        func.lower(func.replace(func.replace(models.Media.tipo, 'í', 'i'), 'é', 'e')) == tipo_norm
+    ).order_by(models.UsuarioMedia.nota_personal.asc()).first()
     if not result:
         raise HTTPException(status_code=404, detail="No hay películas con nota personal")
-    return result
+    
+    media, usuario_media = result
+    # Agregar datos personales
+    media.nota_personal = usuario_media.nota_personal
+    media.favorito = usuario_media.favorito or False
+    media.pendiente = usuario_media.pendiente or False
+    media.anotacion_personal = usuario_media.anotacion_personal
+    media.fecha_agregado = usuario_media.fecha_agregado
+    return media
 
 @app.get("/medias/peor_serie", response_model=schemas.Media)
-def peor_serie(db: Session = Depends(get_db)):
+def peor_serie(user: User = Depends(current_user_required), db: Session = Depends(get_db)):
     def normalize(s):
         return unicodedata.normalize('NFKD', s or '').encode('ASCII', 'ignore').decode('ASCII').lower().strip()
     tipo_norm = 'serie'
-    query = db.query(models.Media).filter(
-        models.Media.pendiente == False,
-        models.Media.nota_personal != None
-    )
-    ids = [m.id for m in query if normalize(m.tipo) == tipo_norm]
-    result = db.query(models.Media).filter(
-        models.Media.id.in_(ids)
-    ).order_by(models.Media.nota_personal.asc()).first()
+    result = db.query(models.Media, models.UsuarioMedia).join(
+        models.UsuarioMedia, models.Media.id == models.UsuarioMedia.media_id
+    ).filter(
+        models.UsuarioMedia.usuario_id == user.id,
+        models.UsuarioMedia.pendiente == False,
+        models.UsuarioMedia.nota_personal != None
+    ).filter(
+        func.lower(func.replace(func.replace(models.Media.tipo, 'í', 'i'), 'é', 'e')) == tipo_norm
+    ).order_by(models.UsuarioMedia.nota_personal.asc()).first()
     if not result:
         raise HTTPException(status_code=404, detail="No hay series con nota personal")
-    return result
+    
+    media, usuario_media = result
+    # Agregar datos personales
+    media.nota_personal = usuario_media.nota_personal
+    media.favorito = usuario_media.favorito or False
+    media.pendiente = usuario_media.pendiente or False
+    media.anotacion_personal = usuario_media.anotacion_personal
+    media.fecha_agregado = usuario_media.fecha_agregado
+    return media
 
 @app.get("/medias/vistos_por_anio")
-def vistos_por_anio(db: Session = Depends(get_db)):
-    medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
+def vistos_por_anio(user: User = Depends(current_user_required), db: Session = Depends(get_db)):
+    medias = db.query(models.Media).join(
+        models.UsuarioMedia, models.Media.id == models.UsuarioMedia.media_id
+    ).filter(
+        models.UsuarioMedia.usuario_id == user.id,
+        models.UsuarioMedia.pendiente == False
+    ).all()
     conteo = {}
     for m in medias:
         anio = getattr(m, 'anio', None)
@@ -358,9 +541,14 @@ def vistos_por_anio(db: Session = Depends(get_db)):
     return conteo
 
 @app.get("/medias/top_personas")
-def top_personas(db: Session = Depends(get_db)):
+def top_personas(user: User = Depends(current_user_required), db: Session = Depends(get_db)):
     from collections import Counter
-    medias = db.query(models.Media).filter(models.Media.pendiente == False).all()
+    medias = db.query(models.Media).join(
+        models.UsuarioMedia, models.Media.id == models.UsuarioMedia.media_id
+    ).filter(
+        models.UsuarioMedia.usuario_id == user.id,
+        models.UsuarioMedia.pendiente == False
+    ).all()
     actores = []
     directores = []
     for m in medias:
@@ -413,13 +601,13 @@ def healthcheck():
 
 @app.get("/medias/{media_id}", response_model=schemas.Media)
 def read_media(media_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
-    # Primero verificar que el media pertenece al usuario
-    media = db.query(models.Media).filter(
-        models.Media.id == media_id,
-        models.Media.usuario_id == current_user.id
+    # Verificar que el usuario tiene este media en su catálogo
+    usuario_media = db.query(models.UsuarioMedia).filter(
+        models.UsuarioMedia.media_id == media_id,
+        models.UsuarioMedia.usuario_id == current_user.id
     ).first()
     
-    if media is None:
+    if usuario_media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     
     # Obtener el media completo con tags del usuario
@@ -428,87 +616,68 @@ def read_media(media_id: int, db: Session = Depends(get_db), current_user: User 
 
 @app.get("/medias/{media_id}/similares", response_model=List[schemas.Media])
 def get_similares(media_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
-    # Verificar que el media pertenece al usuario
-    media = db.query(models.Media).filter(
-        models.Media.id == media_id,
-        models.Media.usuario_id == current_user.id
+    # Verificar que el usuario tiene este media en su catálogo
+    usuario_media = db.query(models.UsuarioMedia).filter(
+        models.UsuarioMedia.media_id == media_id,
+        models.UsuarioMedia.usuario_id == current_user.id
     ).first()
     
-    if media is None:
+    if usuario_media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     
-    similares = crud.get_similares_para_media(db, media_id, n=24)
+    # Obtener similares solo del catálogo del usuario actual
+    similares = crud.get_similares_para_media(db, media_id, usuario_id=current_user.id, n=24)
     return similares
 
 @app.post("/medias", response_model=schemas.Media)
-def create_media(media: schemas.MediaCreate, db: Session = Depends(get_db)):
+def create_media(media: schemas.MediaCreate, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
     try:
-        return crud.create_media(db, media)
+        return crud.create_media(db, media, usuario_id=current_user.id)
     except Exception as e:
         raise HTTPException(status_code=409, detail=str(e))
 
 @app.delete("/medias/{media_id}", response_model=schemas.Media)
-def delete_media(media_id: int, db: Session = Depends(get_db)):
-    db_media = crud.delete_media(db, media_id)
+def delete_media(media_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    db_media = crud.delete_media(db, media_id, usuario_id=current_user.id)
     if db_media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     return db_media
 
 @app.patch("/medias/{media_id}/pendiente", response_model=schemas.Media)
 def update_pendiente(media_id: int, pendiente: bool, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
-    # Verificar que el media pertenece al usuario autenticado
-    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
-    if not media:
-        raise HTTPException(status_code=404, detail="Media not found")
-    
-    db_media = crud.update_media_pendiente(db, media_id, pendiente)
+    db_media = crud.update_media_pendiente(db, media_id, pendiente, usuario_id=current_user.id)
     if db_media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     return db_media
 
 @app.patch("/medias/{media_id}/favorito", response_model=schemas.Media)
 def update_favorito(media_id: int, favorito: bool, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
-    # Verificar que el media pertenece al usuario autenticado
-    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
-    if not media:
-        raise HTTPException(status_code=404, detail="Media not found")
-    
-    db_media = crud.update_media_favorito(db, media_id, favorito)
+    db_media = crud.update_media_favorito(db, media_id, favorito, usuario_id=current_user.id)
     if db_media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     return db_media
 
 @app.patch("/medias/{media_id}/anotacion_personal", response_model=schemas.Media)
 def update_anotacion_personal(media_id: int, anotacion_personal: str = Body(...), db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
-    # Verificar que el media pertenece al usuario autenticado
-    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
-    if not media:
-        raise HTTPException(status_code=404, detail="Media not found")
-    
-    db_media = crud.update_media_anotacion_personal(db, media_id, anotacion_personal)
+    db_media = crud.update_media_anotacion_personal(db, media_id, anotacion_personal, usuario_id=current_user.id)
     if db_media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     return db_media
 
 @app.patch("/medias/{media_id}/nota_personal", response_model=schemas.Media)
 def update_nota_personal(media_id: int, nota_personal: float = Body(...), db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
-    # Verificar que el media pertenece al usuario autenticado
-    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
-    if not media:
-        raise HTTPException(status_code=404, detail="Media not found")
-    
-    db_media = crud.update_media_nota_personal(db, media_id, nota_personal)
+    db_media = crud.update_media_nota_personal(db, media_id, nota_personal, usuario_id=current_user.id)
     if db_media is None:
         raise HTTPException(status_code=404, detail="Media not found")
     return db_media
 
 @app.get("/pendientes", response_model=List[schemas.Media])
-def read_pendientes(skip: int = 0, limit: int = 24, db: Session = Depends(get_db)):
-    return crud.get_pendientes(db, skip=skip, limit=limit)
+def read_pendientes(skip: int = 0, limit: int = 24, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    return crud.get_pendientes(db, skip=skip, limit=limit, usuario_id=current_user.id)
 
 @app.get("/favoritos", response_model=List[schemas.Media])
-def read_favoritos(skip: int = 0, limit: int = 24, db: Session = Depends(get_db)):
-    return crud.get_favoritos(db, skip=skip, limit=limit)
+def read_favoritos(skip: int = 0, limit: int = 24, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    return crud.get_favoritos(db, skip=skip, limit=limit, usuario_id=current_user.id)
 
 @app.get("/tags", response_model=List[schemas.Tag])
 def get_tags(db: Session = Depends(get_db), current_user: User = Depends(current_user_optional)):
@@ -531,9 +700,12 @@ def create_tag(tag: schemas.TagCreate, db: Session = Depends(get_db), current_us
 
 @app.post("/medias/{media_id}/tags/{tag_id}", response_model=schemas.Media)
 def add_tag_to_media(media_id: int, tag_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
-    # Verificar que tanto el media como el tag pertenecen al usuario autenticado
-    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
-    if not media:
+    # Verificar que el usuario tiene este media en su catálogo
+    usuario_media = db.query(models.UsuarioMedia).filter(
+        models.UsuarioMedia.media_id == media_id, 
+        models.UsuarioMedia.usuario_id == current_user.id
+    ).first()
+    if not usuario_media:
         raise HTTPException(status_code=404, detail="Media not found")
     
     tag = db.query(models.Tag).filter(models.Tag.id == tag_id, models.Tag.usuario_id == current_user.id).first()
@@ -547,9 +719,12 @@ def add_tag_to_media(media_id: int, tag_id: int, db: Session = Depends(get_db), 
 
 @app.delete("/medias/{media_id}/tags/{tag_id}", response_model=schemas.Media)
 def remove_tag_from_media(media_id: int, tag_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
-    # Verificar que tanto el media como el tag pertenecen al usuario autenticado
-    media = db.query(models.Media).filter(models.Media.id == media_id, models.Media.usuario_id == current_user.id).first()
-    if not media:
+    # Verificar que el usuario tiene este media en su catálogo
+    usuario_media = db.query(models.UsuarioMedia).filter(
+        models.UsuarioMedia.media_id == media_id, 
+        models.UsuarioMedia.usuario_id == current_user.id
+    ).first()
+    if not usuario_media:
         raise HTTPException(status_code=404, detail="Media not found")
     
     tag = db.query(models.Tag).filter(models.Tag.id == tag_id, models.Tag.usuario_id == current_user.id).first()
@@ -571,6 +746,111 @@ def delete_tag(tag_id: int, db: Session = Depends(get_db), current_user: User = 
     if db_tag is None:
         raise HTTPException(status_code=404, detail="Tag not found")
     return db_tag
+
+# ===== ENDPOINTS DE LISTAS =====
+
+@app.get("/listas")
+def get_listas(db: Session = Depends(get_db), current_user: User = Depends(current_user_optional)):
+    """
+    Obtiene las listas del usuario autenticado. Sin autenticación devuelve lista vacía.
+    """
+    if current_user is None:
+        return []
+    
+    listas = crud.get_listas(db, usuario_id=current_user.id)
+    return listas
+
+@app.post("/listas")
+def create_lista(lista_data: dict, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    """
+    Crea una nueva lista para el usuario autenticado.
+    """
+    nombre = lista_data.get('nombre', '').strip()
+    descripcion = lista_data.get('descripcion', '').strip() or None
+    
+    if not nombre:
+        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+    
+    # Crear la lista en la base de datos
+    db_lista = models.Lista(
+        nombre=nombre,
+        descripcion=descripcion,
+        usuario_id=current_user.id
+    )
+    db.add(db_lista)
+    db.commit()
+    db.refresh(db_lista)
+    
+    # Devolver la lista con medias vacías para compatibilidad con el frontend
+    return {
+        "id": db_lista.id,
+        "nombre": db_lista.nombre,
+        "descripcion": db_lista.descripcion,
+        "medias": []
+    }
+
+@app.get("/listas/{lista_id}")
+def get_lista(lista_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    """
+    Obtiene una lista específica del usuario autenticado.
+    """
+    lista = crud.get_lista(db, lista_id, usuario_id=current_user.id)
+    if not lista:
+        raise HTTPException(status_code=404, detail="Lista no encontrada")
+    return lista
+
+@app.delete("/listas/{lista_id}")
+def delete_lista(lista_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    """
+    Elimina una lista del usuario autenticado.
+    """
+    lista = crud.delete_lista(db, lista_id, usuario_id=current_user.id)
+    if not lista:
+        raise HTTPException(status_code=404, detail="Lista no encontrada")
+    return {"message": "Lista eliminada correctamente"}
+
+@app.put("/listas/{lista_id}")
+def update_lista(lista_id: int, lista_data: dict, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    """
+    Actualiza una lista del usuario autenticado.
+    """
+    nombre = lista_data.get('nombre')
+    descripcion = lista_data.get('descripcion')
+    
+    lista = crud.update_lista(db, lista_id, nombre=nombre, descripcion=descripcion, usuario_id=current_user.id)
+    if not lista:
+        raise HTTPException(status_code=404, detail="Lista no encontrada")
+    return lista
+
+@app.post("/listas/{lista_id}/medias/{media_id}")
+def add_media_to_lista(lista_id: int, media_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    """
+    Añade un media a una lista del usuario autenticado.
+    """
+    lista = crud.add_media_to_lista(db, lista_id, media_id, usuario_id=current_user.id)
+    if not lista:
+        raise HTTPException(status_code=404, detail="Lista o Media no encontrado")
+    return lista
+
+@app.delete("/listas/{lista_id}/medias/{media_id}")
+def remove_media_from_lista(lista_id: int, media_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    """
+    Remueve un media de una lista del usuario autenticado.
+    """
+    lista = crud.remove_media_from_lista(db, lista_id, media_id, usuario_id=current_user.id)
+    if not lista:
+        raise HTTPException(status_code=404, detail="Lista o Media no encontrado")
+    return lista
+
+@app.put("/listas/{lista_id}/order")
+def update_lista_order(lista_id: int, media_ids: List[int] = Body(...), db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    """
+    Actualiza el orden personalizado de los medias en una lista del usuario autenticado.
+    """
+    lista = crud.update_lista_order(db, lista_id, media_ids, usuario_id=current_user.id)
+    if not lista:
+        raise HTTPException(status_code=404, detail="Lista no encontrada")
+    return {"success": True, "message": "Orden actualizado correctamente"}
 
 @app.get("/tmdb")
 def get_tmdb_info(
@@ -947,20 +1227,19 @@ def tmdb_recommendations(media_type: str, tmdb_id: int, language: str = Query("e
 
 from sqlalchemy import or_
 # --- Person endpoints (TMDb proxy) ---
-# Endpoint: Medias vistas con este actor (por tmdb_id de persona)
+
+# Nuevo endpoint: Medias vistas con este actor usando la relación real
 @app.get("/medias/by_actor/{person_tmdb_id}", response_model=List[schemas.Media])
-def get_medias_by_actor(person_tmdb_id: int, db: Session = Depends(get_db)):
+def get_medias_by_actor(person_tmdb_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
     """
-    Devuelve todas las medias donde el actor con ese TMDb ID aparece en el campo elenco (como id o nombre).
-    Busca coincidencias en el campo elenco (que es texto, puede contener ids o nombres).
+    Devuelve todas las medias del usuario autenticado donde el actor con ese TMDb ID aparece (usando la relación real).
     """
-    # El campo elenco puede ser: "Nombre1 (id1), Nombre2 (id2), ..."
-    # Buscamos por id entre paréntesis o por nombre exacto si no hay id
-    # Ejemplo: elenco = "Tom Hanks (31), Tim Allen (12898)"
-    # Para person_tmdb_id=31, buscar "(31)" en elenco
-    pattern = f"({person_tmdb_id})"
-    query = db.query(models.Media).filter(models.Media.elenco.ilike(f"%{pattern}%"))
-    return query.all()
+    actor = db.query(models.Actor).filter(models.Actor.tmdb_id == person_tmdb_id).first()
+    if not actor:
+        return []
+    # Filtrar medias por usuario actual
+    medias = [m for m in actor.medias if m.usuario_id == current_user.id]
+    return medias
 @app.get("/tmdb/person/{person_id}")
 def tmdb_person_detail(person_id: int, language: str = Query("es-ES")):
     """Proxy para obtener detalles de una persona (actor/director) desde TMDb"""
@@ -1368,7 +1647,264 @@ def clear_poster_cache_endpoint():
         "stats": result["cache_stats"]
     }
 
-# Incluir rutas de autenticación (ANTES del catch-all)
+from fastapi import Form
+from fastapi.responses import JSONResponse
+from fastapi_users.authentication import JWTStrategy
+
+
+# Custom login endpoint for SPA: returns JWT in body
+@app.post("/auth/jwt/login", tags=["auth"])
+async def custom_jwt_login(
+    response: Response,
+    username: str = Form(...),
+    password: str = Form(...),
+    user_manager = Depends(get_user_manager),
+):
+    try:
+        # Get user by email
+        user = await user_manager.get_by_email(username)
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=400, detail="Credenciales incorrectas")
+        
+        # Verify password using the user manager's method
+        verified, updated_password_hash = user_manager.password_helper.verify_and_update(password, user.hashed_password)
+        if not verified:
+            raise HTTPException(status_code=400, detail="Credenciales incorrectas")
+        
+        # Generate JWT token
+        jwt_strategy = get_jwt_strategy()
+        token = await jwt_strategy.write_token(user)
+        
+        # Set cookie for compatibility
+        response.set_cookie(
+            key="auth",
+            value=token,
+            max_age=3600,
+            httponly=False,  # Allow JS access for SPA
+            samesite="lax",
+            secure=False
+        )
+        return {"access_token": token, "token_type": "bearer"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Login error: {e}")
+        raise HTTPException(status_code=400, detail="Credenciales incorrectas")
+
+# Endpoint personalizado para recuperación de contraseña que permite email o username
+@app.post("/auth/forgot-password-custom")
+async def forgot_password_custom(
+    email_or_username: str = Body(..., embed=True),
+    language: str = Body('es', embed=True),  # Idioma para el email
+    user_manager = Depends(get_user_manager)
+):
+    """Permite recuperación de contraseña usando email o username"""
+    try:
+        # Buscar usuario por email o username
+        if hasattr(user_manager.user_db, 'get_by_email_or_username'):
+            user = await user_manager.user_db.get_by_email_or_username(email_or_username)
+        else:
+            # Fallback: intentar por email
+            try:
+                user = await user_manager.user_db.get_by_email(email_or_username)
+            except:
+                user = None
+        
+        if user is None:
+            # Por seguridad, no revelar si el usuario existe o no
+            return {"message": "Si el email/usuario existe, recibirás un correo con instrucciones para restablecer tu contraseña"}
+        
+        # Generar token de recuperación
+        token = await user_manager.forgot_password(user)
+        
+        # Enviar email usando el idioma especificado por el usuario
+        from email_service import get_email_service
+        email_service = get_email_service()
+        
+        await email_service.send_password_reset_email(
+            to_email=user.email,
+            username=user.username,
+            reset_token=token,
+            user_language=language  # Usar el idioma del frontend
+        )
+        
+        return {"message": "Si el email/usuario existe, recibirás un correo con instrucciones para restablecer tu contraseña"}
+        
+    except Exception as e:
+        print(f"Error en forgot-password-custom: {e}")
+        return {"message": "Si el email/usuario existe, recibirás un correo con instrucciones para restablecer tu contraseña"}
+
+# Endpoint para verificar disponibilidad de username
+@app.get("/auth/check-username/{username}")
+async def check_username_availability(username: str, db: Session = Depends(get_db)):
+    """Verifica si un nombre de usuario está disponible"""
+    # Normalizar el username a minúsculas
+    username_lower = username.lower().strip()
+    
+    # Validaciones básicas
+    if len(username_lower) < 3:
+        raise HTTPException(status_code=400, detail="El nombre de usuario debe tener al menos 3 caracteres")
+    if len(username_lower) > 50:
+        raise HTTPException(status_code=400, detail="El nombre de usuario no puede tener más de 50 caracteres")
+    if not username_lower.replace('_', '').replace('-', '').replace('.', '').isalnum():
+        raise HTTPException(status_code=400, detail="El nombre de usuario solo puede contener letras, números, guiones, guiones bajos y puntos")
+    
+    # Verificar si ya existe (sin distinguir mayúsculas/minúsculas)
+    existing_user = db.query(User).filter(func.lower(User.username) == username_lower).first()
+    
+    if existing_user:
+        return {"available": False, "message": "Este nombre de usuario ya está en uso"}
+    
+    return {"available": True, "message": "Nombre de usuario disponible"}
+
+# Endpoint para restablecer contraseña
+@app.post("/auth/reset-password")
+async def reset_password_custom(
+    token: str = Body(...),
+    password: str = Body(...),
+    user_manager = Depends(get_user_manager)
+):
+    """Restablece la contraseña usando el token de recuperación"""
+    try:
+        await user_manager.reset_password(token, password)
+        return {"message": "Contraseña restablecida exitosamente"}
+    except Exception as e:
+        print(f"Error en reset-password: {e}")
+        raise HTTPException(status_code=400, detail="Token inválido o expirado")
+
+# --- Debug endpoint para registro ---
+@app.post("/auth/debug-register")
+async def debug_register(request: Request):
+    try:
+        body = await request.json()
+        print("=== DEBUG REGISTER ===")
+        print("Data recibida:", body)
+        print("Tipos de datos:")
+        for key, value in body.items():
+            print(f"  {key}: {type(value)} = {repr(value)}")
+        print("=====================")
+        
+        # Intentar validar con el schema
+        try:
+            user_create = UserCreate(**body)
+            print("Schema validation SUCCESS")
+            return {"status": "ok", "message": "Datos válidos"}
+        except Exception as e:
+            print(f"Schema validation ERROR: {e}")
+            return {"status": "error", "validation_error": str(e)}
+            
+    except Exception as e:
+        print(f"General error: {e}")
+        return {"status": "error", "error": str(e)}
+
+# Endpoint personalizado para buscar email por username
+@app.get("/users/lookup/{username_or_email}")
+async def lookup_user_email(username_or_email: str, user_db = Depends(get_user_db)):
+    """Busca el email de un usuario por username o email"""
+    try:
+        # Usar el método personalizado para buscar por email o username
+        if hasattr(user_db, 'get_by_email_or_username'):
+            user = await user_db.get_by_email_or_username(username_or_email)
+        else:
+            # Fallback: buscar solo por email
+            user = await user_db.get_by_email(username_or_email)
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        
+        return {"email": user.email, "username": user.username}
+    except Exception as e:
+        print(f"Error en lookup de usuario: {e}")
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+# ===== ENDPOINT DE VERIFICACIÓN DE EMAIL =====
+
+@app.post("/auth/verify-email")
+async def verify_email(
+    token: str = Body(..., embed=True),
+    user_manager: UserManager = Depends(get_user_manager),
+    db: Session = Depends(get_db)
+):
+    """Verifica el email de un usuario usando el token enviado por email"""
+    try:
+        # Usar el método de fastapi-users para verificar el token
+        # (reutilizamos la lógica de reset password para la verificación)
+        user = await user_manager.verify_password_reset_token(token)
+        
+        if not user:
+            raise HTTPException(
+                status_code=400,
+                detail="Token de verificación inválido o expirado"
+            )
+        
+        # Marcar el usuario como verificado
+        user.is_verified = True
+        db.commit()
+        
+        print(f"Usuario verificado exitosamente: {user.username} ({user.email})")
+        
+        return {
+            "message": "Email verificado exitosamente",
+            "username": user.username,
+            "email": user.email
+        }
+        
+    except Exception as e:
+        print(f"Error en verificación de email: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="Error al verificar el email. El token puede ser inválido o haber expirado."
+        )
+
+@app.post("/auth/resend-verification")
+async def resend_verification_email(
+    email: str = Body(..., embed=True),
+    user_manager: UserManager = Depends(get_user_manager),
+    db: Session = Depends(get_db)
+):
+    """Reenvía el email de verificación a un usuario"""
+    try:
+        # Buscar el usuario por email
+        user = db.query(User).filter(User.email == email).first()
+        
+        if not user:
+            # Por seguridad, no revelamos si el email existe o no
+            return {"message": "Si el email existe en nuestro sistema, se enviará un nuevo email de verificación"}
+        
+        if user.is_verified:
+            raise HTTPException(
+                status_code=400,
+                detail="Esta cuenta ya está verificada"
+            )
+        
+        # Generar nuevo token de verificación
+        verification_token = await user_manager.get_reset_password_token(user)
+        
+        # Enviar email de verificación
+        from email_service import get_email_service
+        email_service = get_email_service()
+        
+        verification_sent = await email_service.send_verification_email(
+            to_email=user.email,
+            username=user.username,
+            verification_token=verification_token,
+            user_language='es'  # Por defecto español
+        )
+        
+        if verification_sent:
+            print(f"Email de verificación reenviado a {user.email}")
+        else:
+            print(f"Error reenviando email de verificación a {user.email}")
+        
+        return {"message": "Si el email existe en nuestro sistema, se enviará un nuevo email de verificación"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error reenviando verificación: {e}")
+        return {"message": "Si el email existe en nuestro sistema, se enviará un nuevo email de verificación"}
+
+# Incluir rutas de autenticación (mantener para compatibilidad con fastapi-users)
 app.include_router(
     fastapi_users.get_auth_router(auth_backend),
     prefix="/auth/jwt",
@@ -1380,12 +1916,46 @@ app.include_router(
     tags=["auth"],
 )
 app.include_router(
+    fastapi_users.get_reset_password_router(),
+    prefix="/auth",
+    tags=["auth"],
+)
+app.include_router(
     fastapi_users.get_users_router(UserRead, UserRead),
     prefix="/users",
     tags=["users"],
 )
 
 # --- Al final del archivo: servir frontend React para rutas no API ---
+@app.get("/tmdb/{media_type}/{tmdb_id}")
+async def get_tmdb_data(media_type: str, tmdb_id: int):
+    """Proxy endpoint para obtener datos de TMDB con backdrop"""
+    try:
+        headers = get_tmdb_auth_headers()
+        
+        # Construir URL y parámetros
+        url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}"
+        params = {}
+        
+        # Si no hay Bearer token, usar API key si está disponible
+        if not headers:
+            from config import TMDB_API_KEY
+            if TMDB_API_KEY:
+                params["api_key"] = TMDB_API_KEY
+            else:
+                raise HTTPException(status_code=500, detail="TMDB API key no configurada")
+        
+        # Hacer petición a TMDB
+        response = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise HTTPException(status_code=response.status_code, detail=f"Error de TMDB: {response.text}")
+            
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Error al conectar con TMDB: {str(e)}")
+
 @app.get("/", include_in_schema=False)
 @app.get("/{full_path:path}", include_in_schema=False)
 def serve_react_app(full_path: str = ""):
