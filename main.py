@@ -34,10 +34,18 @@ from fastapi_users.router import get_auth_router, get_register_router
 from users import User
 from user_manager import get_user_manager, SECRET, UserManager
 from user_manager import get_user_db
-from schemas import UserRead, UserCreate
 
+from schemas import UserRead, UserCreate
+import genre_routes
 
 app = FastAPI()
+
+# Incluir rutas de géneros
+app.include_router(
+    genre_routes.router,
+    prefix="/api",
+    tags=["genres"],
+)
 
 # Activar compresión GZIP para todas las respuestas
 
@@ -1161,6 +1169,53 @@ def tmdb_watch_providers(media_type: str, tmdb_id: int):
         raise HTTPException(status_code=502, detail="Error al obtener watch providers de TMDb")
     return r.json()
 
+@app.get("/tmdb/watch/providers/list")
+def tmdb_watch_providers_list():
+    """Obtener lista completa de watch providers disponibles en TMDb"""
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/watch/providers/movie"
+    r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener lista de watch providers de TMDb")
+    return r.json()
+
+@app.get("/tmdb/watch/providers/regions/{country_code}")
+def tmdb_watch_providers_by_country(country_code: str):
+    """Obtener watch providers disponibles en un país específico"""
+    headers = get_tmdb_auth_headers()
+    
+    # Obtener providers tanto de movies como de TV para tener cobertura completa
+    movie_url = f"{TMDB_BASE_URL}/watch/providers/movie?watch_region={country_code.upper()}"
+    tv_url = f"{TMDB_BASE_URL}/watch/providers/tv?watch_region={country_code.upper()}"
+    
+    try:
+        movie_response = requests.get(movie_url, headers=headers, timeout=REQUEST_TIMEOUT)
+        tv_response = requests.get(tv_url, headers=headers, timeout=REQUEST_TIMEOUT)
+        
+        providers = {}
+        
+        # Combinar providers de movies y TV
+        if movie_response.status_code == 200:
+            movie_data = movie_response.json()
+            if 'results' in movie_data:
+                for provider in movie_data['results']:
+                    providers[provider['provider_id']] = provider
+        
+        if tv_response.status_code == 200:
+            tv_data = tv_response.json()
+            if 'results' in tv_data:
+                for provider in tv_data['results']:
+                    providers[provider['provider_id']] = provider
+        
+        # Retornar la lista consolidada
+        return {
+            "results": list(providers.values()),
+            "country_code": country_code.upper()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Error al obtener providers para {country_code}: {str(e)}")
+
 @app.get("/tmdb/{media_type}/{tmdb_id}/external_ids")
 def tmdb_external_ids(media_type: str, tmdb_id: int):
     # Accept person as well to avoid route conflicts with /tmdb/person/{id}/external_ids
@@ -1176,6 +1231,15 @@ def tmdb_external_ids(media_type: str, tmdb_id: int):
         raise HTTPException(status_code=502, detail="Error al obtener external_ids de TMDb")
     return r.json()
 
+@app.get("/tmdb/collection/{collection_id}")
+def tmdb_collection(collection_id: int, language: str = Query("es-ES")):
+    headers = get_tmdb_auth_headers()
+    url = f"{TMDB_BASE_URL}/collection/{collection_id}"
+    r = requests.get(url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail="Error al obtener colección de TMDb")
+    return r.json()
+
 @app.get("/tmdb/{media_type}/{tmdb_id}")
 def tmdb_detail(media_type: str, tmdb_id: int, language: str = Query("es-ES")):
     # Accept person as well to avoid conflicts with /tmdb/person/{id}
@@ -1189,15 +1253,6 @@ def tmdb_detail(media_type: str, tmdb_id: int, language: str = Query("es-ES")):
     r = requests.get(url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
     if r.status_code != 200:
         raise HTTPException(status_code=502, detail="Error al obtener detalle de TMDb")
-    return r.json()
-
-@app.get("/tmdb/collection/{collection_id}")
-def tmdb_collection(collection_id: int, language: str = Query("es-ES")):
-    headers = get_tmdb_auth_headers()
-    url = f"{TMDB_BASE_URL}/collection/{collection_id}"
-    r = requests.get(url, headers=headers, params={"language": language}, timeout=REQUEST_TIMEOUT)
-    if r.status_code != 200:
-        raise HTTPException(status_code=502, detail="Error al obtener colección de TMDb")
     return r.json()
 
 
@@ -1924,6 +1979,13 @@ app.include_router(
     fastapi_users.get_users_router(UserRead, UserRead),
     prefix="/users",
     tags=["users"],
+)
+
+# Incluir rutas de géneros
+app.include_router(
+    genre_routes.router,
+    prefix="/api",
+    tags=["genres"],
 )
 
 # --- Al final del archivo: servir frontend React para rutas no API ---
