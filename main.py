@@ -6,7 +6,9 @@ import os
 import time
 import requests
 import unicodedata
+from datetime import datetime, date
 from translation_service import TranslationService, get_translation_service
+from auto_update_service import AutoUpdateService, get_auto_update_service
 from poster_cache import (
     get_poster_cache, 
     set_poster_cache, 
@@ -191,7 +193,7 @@ def search_medias(
         # Búsqueda en los campos de texto
         or_(
             func.lower(models.Media.titulo).like(search_term),
-            func.lower(models.Media.titulo_ingles).like(search_term),
+            func.lower(models.Media.original_title).like(search_term),
             func.lower(models.Media.elenco).like(search_term),
             func.lower(models.Media.director).like(search_term)
         )
@@ -231,6 +233,185 @@ def search_medias(
                 media.fecha_agregado = None
     
     return items
+
+@app.get("/search/multilingual")
+async def search_multilingual(
+    q: str = Query(..., description="Término de búsqueda"),
+    limit: int = Query(20, ge=1, le=100, description="Límite de resultados"),
+    include_language_info: bool = Query(False, description="Incluir información del idioma encontrado"),
+    db: Session = Depends(get_db)
+):
+    """
+    Búsqueda multiidioma avanzada que busca en:
+    1. Títulos en español (media.titulo)
+    2. Títulos originales (media.original_title) 
+    3. Traducciones en otros idiomas (content_translations.title)
+    
+    Prioriza resultados en español, luego originales, luego otros idiomas.
+    """
+    
+    search_pattern = f"%{q.lower()}%"
+    
+    # Query optimizada con UNION para búsqueda multiidioma
+    multilingual_query = text("""
+        WITH multilingual_search AS (
+            -- Búsqueda en títulos españoles (tabla media)
+            SELECT DISTINCT
+                m.id,
+                m.titulo,
+                m.original_title,
+                m.anio,
+                m.tipo,
+                m.genero,
+                m.director,
+                m.elenco,
+                m.imagen,
+                m.status,  -- Cambiado de estado a status
+                m.nota_imdb,
+                'es' as idioma_encontrado,
+                m.titulo as titulo_encontrado,
+                1 as prioridad
+            FROM media m
+            WHERE LOWER(m.titulo) LIKE :search_pattern
+            
+            UNION
+            
+            -- Búsqueda en títulos originales (tabla media)
+            SELECT DISTINCT
+                m.id,
+                m.titulo,
+                m.original_title,
+                m.anio,
+                m.tipo,
+                m.genero,
+                m.director,
+                m.elenco,
+                m.imagen,
+                m.status,  -- Cambiado de estado a status
+                m.nota_imdb,
+                'original' as idioma_encontrado,
+                m.original_title as titulo_encontrado,
+                2 as prioridad
+            FROM media m
+            WHERE LOWER(m.original_title) LIKE :search_pattern
+            AND m.original_title IS NOT NULL
+            
+            UNION
+            
+            -- Búsqueda en traducciones (content_translations)
+            SELECT DISTINCT
+                m.id,
+                m.titulo,
+                m.original_title,
+                m.anio,
+                m.tipo,
+                m.genero,
+                m.director,
+                m.elenco,
+                m.imagen,
+                m.status,  -- Cambiado de estado a status
+                m.nota_imdb,
+                ct.language_code as idioma_encontrado,
+                ct.title as titulo_encontrado,
+                3 as prioridad
+            FROM media m
+            INNER JOIN content_translations ct ON m.id = ct.media_id
+            WHERE LOWER(ct.title) LIKE :search_pattern
+            AND ct.language_code NOT IN ('es')  -- Evitar duplicar español
+        )
+        SELECT * FROM multilingual_search
+        ORDER BY prioridad, titulo
+        LIMIT :limit_val
+    """)
+    
+    # Ejecutar búsqueda
+    result = db.execute(multilingual_query, {
+        'search_pattern': search_pattern,
+        'limit_val': limit
+    })
+    
+    # Procesar resultados
+    movies = []
+    for row in result:
+        movie_data = {
+            "id": row[0],
+            "titulo": row[1],
+            "original_title": row[2],
+            "anio": row[3],
+            "tipo": row[4],
+            "genero": row[5],
+            "director": row[6],
+            "elenco": row[7],
+            "imagen": row[8],
+            "status": row[9],  # Cambiado de estado a status
+            "nota_imdb": row[10]
+        }
+        
+        # Añadir información del idioma si se solicita
+        if include_language_info:
+            movie_data["search_info"] = {
+                "idioma_encontrado": row[11],
+                "titulo_encontrado": row[12],
+                "prioridad": row[13]
+            }
+        
+        movies.append(movie_data)
+    
+    return {
+        "query": q,
+        "total_found": len(movies),
+        "results": movies,
+        "search_info": {
+            "languages_searched": ["es", "original", "en", "pt", "fr", "de", "it"],
+            "priority_order": ["español", "original", "otros_idiomas"]
+        }
+    }
+
+@app.get("/search/languages")
+async def get_available_languages(db: Session = Depends(get_db)):
+    """
+    Obtiene los idiomas disponibles para búsqueda
+    """
+    
+    # Idiomas en content_translations
+    translation_languages = db.execute(text("""
+        SELECT language_code, COUNT(*) as count 
+        FROM content_translations 
+        GROUP BY language_code 
+        ORDER BY count DESC
+    """)).fetchall()
+    
+    # Estadísticas de media
+    media_stats = db.execute(text("""
+        SELECT 
+            COUNT(*) as total_media,
+            COUNT(original_title) as with_original_title
+        FROM media
+    """)).fetchone()
+    
+    return {
+        "available_languages": {
+            "es": {
+                "name": "Español",
+                "source": "media.titulo",
+                "count": media_stats[0]
+            },
+            "original": {
+                "name": "Título Original",
+                "source": "media.original_title", 
+                "count": media_stats[1]
+            }
+        },
+        "translation_languages": [
+            {
+                "code": row[0],
+                "count": row[1],
+                "source": "content_translations"
+            }
+            for row in translation_languages
+        ],
+        "total_searchable_titles": sum(row[1] for row in translation_languages) + media_stats[0]
+    }
 
 @app.on_event("startup")
 def startup():
@@ -706,6 +887,60 @@ def create_tag(tag: schemas.TagCreate, db: Session = Depends(get_db), current_us
         status_code = 409 if "existe un tag" in lower else 400
         raise HTTPException(status_code=status_code, detail=msg)
 
+@app.get("/medias/{media_id}/translations", response_model=schemas.TranslationSummary)
+def get_media_translation_summary(media_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    """
+    Obtiene un resumen de las traducciones disponibles para un media específico
+    """
+    # Verificar que el usuario tiene acceso a este media
+    user_media = crud.get_media(db, media_id, usuario_id=current_user.id)
+    if not user_media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
+    from auto_translation_service import get_translation_summary
+    summary = get_translation_summary(db, media_id)
+    return schemas.TranslationSummary(**summary)
+
+@app.get("/medias/check-personal-catalog/{tmdb_id}")
+def check_tmdb_in_personal_catalog(tmdb_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
+    """
+    Verifica si un título (por TMDb ID) ya está en el catálogo personal del usuario
+    """
+    # Buscar si existe un media con este tmdb_id en el catálogo personal del usuario
+    user_media = db.query(models.UsuarioMedia).join(
+        models.Media, models.UsuarioMedia.media_id == models.Media.id
+    ).filter(
+        models.Media.tmdb_id == tmdb_id,
+        models.UsuarioMedia.usuario_id == current_user.id
+    ).first()
+    
+    if user_media:
+        # El título ya está en el catálogo personal
+        media = db.query(models.Media).filter(models.Media.id == user_media.media_id).first()
+        return {
+            "exists": True,
+            "in_personal_catalog": True,
+            "media_id": media.id,
+            "titulo": media.titulo,
+            "tipo": media.tipo,
+            "anio": media.anio,
+            "fecha_agregado": user_media.fecha_agregado.isoformat() if user_media.fecha_agregado else None,
+            "favorito": user_media.favorito,
+            "pendiente": user_media.pendiente
+        }
+    else:
+        # Verificar si el título existe en la tabla media general pero no en el catálogo personal
+        media_exists = db.query(models.Media).filter(models.Media.tmdb_id == tmdb_id).first()
+        
+        return {
+            "exists": False,
+            "in_personal_catalog": False,
+            "exists_in_general": media_exists is not None,
+            "media_id": media_exists.id if media_exists else None,
+            "titulo": media_exists.titulo if media_exists else None,
+            "tipo": media_exists.tipo if media_exists else None
+        }
+
 @app.post("/medias/{media_id}/tags/{tag_id}", response_model=schemas.Media)
 def add_tag_to_media(media_id: int, tag_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
     # Verificar que el usuario tiene este media en su catálogo
@@ -905,6 +1140,20 @@ def get_tmdb_info(
                     yt_trailers = [v for v in videos_en if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
             if yt_trailers:
                 trailer_url = f"https://www.youtube.com/watch?v={yt_trailers[0]['key']}"
+            
+            # Procesar production_countries
+            production_countries = None
+            if detail.get("production_countries"):
+                production_countries = ", ".join([country["name"] for country in detail["production_countries"]])
+            
+            # Procesar release_date
+            release_date = None
+            if detail.get("release_date"):
+                try:
+                    release_date = datetime.strptime(detail["release_date"], "%Y-%m-%d").date()
+                except:
+                    pass
+            
             return {
                 "titulo": detail.get("title") or detail.get("name", ""),
                 "titulo_original": detail.get("original_title", ""),
@@ -915,7 +1164,7 @@ def get_tmdb_info(
                 "director": director,
                 "elenco": elenco,
                 "imagen": get_best_poster(id, "movie", language),
-                "estado": detail.get("status", ""),
+                "status": detail.get("status", ""),  # Cambiado de estado a status
                 "tipo": tipo,
                 "temporadas": None,
                 "episodios": None,
@@ -924,7 +1173,15 @@ def get_tmdb_info(
                 "votos_tmdb": detail.get("vote_count"),
                 "presupuesto": detail.get("budget"),
                 "recaudacion": detail.get("revenue"),
-                "trailer": trailer_url
+                "trailer": trailer_url,
+                # Campos adicionales para películas
+                "runtime": detail.get("runtime"),
+                "production_countries": production_countries,
+                "status": detail.get("status", ""),
+                "certification": None,  # Se manejará en las traducciones por región
+                "first_air_date": None,  # Solo para series
+                "last_air_date": None,   # Solo para series
+                "episode_runtime": None  # Solo para series
             }
         else:
             detail_url = f"{TMDB_BASE_URL}/tv/{id}"
@@ -983,6 +1240,31 @@ def get_tmdb_info(
                     yt_trailers = [v for v in videos_en if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
             if yt_trailers:
                 trailer_url = f"https://www.youtube.com/watch?v={yt_trailers[0]['key']}"
+            
+            # Procesar episode_runtime
+            episode_runtime = None
+            if detail.get("episode_run_time"):
+                episode_runtime = ", ".join(map(str, detail["episode_run_time"]))
+            
+            # Procesar production_countries
+            production_countries = None
+            if detail.get("production_countries"):
+                production_countries = ", ".join([country["name"] for country in detail["production_countries"]])
+            
+            # Procesar first_air_date y last_air_date
+            first_air_date = None
+            last_air_date = None
+            if detail.get("first_air_date"):
+                try:
+                    first_air_date = datetime.strptime(detail["first_air_date"], "%Y-%m-%d").date()
+                except:
+                    pass
+            if detail.get("last_air_date"):
+                try:
+                    last_air_date = datetime.strptime(detail["last_air_date"], "%Y-%m-%d").date()
+                except:
+                    pass
+            
             return {
                 "titulo": detail.get("name", ""),
                 "titulo_original": detail.get("original_name", ""),
@@ -993,7 +1275,7 @@ def get_tmdb_info(
                 "director": director,
                 "elenco": elenco,
                 "imagen": get_best_poster(id, "tv", language),
-                "estado": detail.get("status", ""),
+                "status": detail.get("status", ""),  # Cambiado de estado a status
                 "tipo": tipo,
                 "temporadas": detail.get("number_of_seasons"),
                 "episodios": detail.get("number_of_episodes"),
@@ -1001,7 +1283,15 @@ def get_tmdb_info(
                 "nota_tmdb": detail.get("vote_average"),
                 "votos_tmdb": detail.get("vote_count"),
                 "temporadas_detalle": temporadas_detalle,
-                "trailer": trailer_url
+                "trailer": trailer_url,
+                # Campos adicionales para series
+                "runtime": None,  # Las series no tienen runtime general
+                "production_countries": production_countries,
+                "status": detail.get("status", ""),
+                "certification": None,  # Se manejará en las traducciones por región
+                "first_air_date": first_air_date,
+                "last_air_date": last_air_date,
+                "episode_runtime": episode_runtime
             }
     # Si listar=True, devolver lista resumida de opciones
     if listar:
@@ -1085,7 +1375,7 @@ def get_tmdb_info(
             "director": director,
             "elenco": elenco,
             "imagen": get_best_poster(item['id'], "movie", language),
-            "estado": detail.get("status", ""),
+            "status": detail.get("status", ""),  # Cambiado de estado a status
             "tipo": tipo,
             "temporadas": None,
             "episodios": None,
@@ -1148,7 +1438,7 @@ def get_tmdb_info(
             "director": director,
             "elenco": elenco,
             "imagen": get_best_poster(item['id'], "tv", language),
-            "estado": detail.get("status", ""),
+            "status": detail.get("status", ""),  # Cambiado de estado a status
             "tipo": tipo,
             "temporadas": detail.get("number_of_seasons"),
             "episodios": detail.get("number_of_episodes"),
@@ -1288,13 +1578,54 @@ from sqlalchemy import or_
 def get_medias_by_actor(person_tmdb_id: int, db: Session = Depends(get_db), current_user: User = Depends(current_user_required)):
     """
     Devuelve todas las medias del usuario autenticado donde el actor con ese TMDb ID aparece (usando la relación real).
+    Incluye información personal del usuario (notas, favoritos, etc.)
     """
     actor = db.query(models.Actor).filter(models.Actor.tmdb_id == person_tmdb_id).first()
     if not actor:
         return []
-    # Filtrar medias por usuario actual
-    medias = [m for m in actor.medias if m.usuario_id == current_user.id]
-    return medias
+    
+    # Obtener medias del actor que están en la biblioteca del usuario actual
+    # Incluir información personal del usuario usando join con UsuarioMedia
+    medias_with_user_data = db.query(models.Media, models.UsuarioMedia).join(
+        models.UsuarioMedia, models.Media.id == models.UsuarioMedia.media_id
+    ).filter(
+        models.UsuarioMedia.usuario_id == current_user.id,
+        models.Media.id.in_([m.id for m in actor.medias])
+    ).all()
+    
+    # Combinar datos de Media con datos personales de UsuarioMedia
+    result = []
+    for media, usuario_media in medias_with_user_data:
+        # Crear un objeto que combine ambos
+        media_dict = {
+            "id": media.id,
+            "tmdb_id": media.tmdb_id,
+            "titulo": media.titulo,
+            "anio": media.anio,
+            "genero": media.genero,
+            "sinopsis": media.sinopsis,
+            "director": media.director,
+            "elenco": media.elenco,
+            "imagen": media.imagen,
+            "status": media.status,  # Cambiado de estado a status
+            "tipo": media.tipo,
+            "temporadas": media.temporadas,
+            "episodios": media.episodios,
+            "nota_imdb": media.nota_imdb,
+            "original_title": media.original_title,
+            "runtime": media.runtime,
+            "production_countries": media.production_countries,
+            "status": media.status,
+            # Datos personales del usuario
+            "nota_personal": usuario_media.nota_personal,
+            "anotacion_personal": usuario_media.anotacion_personal,
+            "favorito": usuario_media.favorito,
+            "pendiente": usuario_media.pendiente,
+            "fecha_agregado": usuario_media.fecha_agregado
+        }
+        result.append(schemas.Media(**media_dict))
+    
+    return result
 @app.get("/tmdb/person/{person_id}")
 def tmdb_person_detail(person_id: int, language: str = Query("es-ES")):
     """Proxy para obtener detalles de una persona (actor/director) desde TMDb"""
@@ -1988,16 +2319,186 @@ app.include_router(
     tags=["genres"],
 )
 
-# --- Al final del archivo: servir frontend React para rutas no API ---
+# --- Endpoints de contenido híbrido (cache + TMDb fallback) ---
+
+@app.get("/content-cache/{tmdb_id}/{language_code}")
+async def get_cached_content(tmdb_id: int, language_code: str, db: Session = Depends(database.get_db)):
+    """Obtiene contenido desde cache local por TMDb ID e idioma"""
+    try:
+        # Buscar en traducciones primero
+        translation = db.query(models.ContentTranslation).filter(
+            models.ContentTranslation.tmdb_id == tmdb_id,
+            models.ContentTranslation.language_code == language_code
+        ).first()
+        
+        if translation:
+            return {
+                "tmdb_id": tmdb_id,
+                "language_code": language_code,
+                "poster_url": translation.poster_url,
+                "backdrop_url": translation.backdrop_url,
+                "title": translation.title,
+                "synopsis": translation.synopsis,
+                "tagline": translation.tagline,
+                "cached": True
+            }
+        
+        # Si no hay traducción, buscar en media (datos base)
+        media = db.query(models.Media).filter(
+            models.Media.tmdb_id == tmdb_id
+        ).first()
+        
+        if media:
+            return {
+                "tmdb_id": tmdb_id,
+                "language_code": language_code,
+                "poster_url": media.imagen,  # Poster original
+                "backdrop_url": None,
+                "title": media.titulo,
+                "synopsis": media.sinopsis,
+                "tagline": None,
+                "cached": True
+            }
+        
+        # No lanzar excepción, devolver 404 directamente
+        raise HTTPException(status_code=404, detail="Contenido no encontrado en cache")
+        
+    except HTTPException:
+        # Re-lanzar HTTPExceptions sin convertirlas
+        raise
+    except Exception as e:
+        # Solo convertir errores reales de base de datos/sistema
+        raise HTTPException(status_code=500, detail=f"Error obteniendo cache: {str(e)}")
+
+@app.post("/content-cache/batch")
+async def get_batch_cached_content(request: dict, db: Session = Depends(database.get_db)):
+    """Obtiene contenido en lote desde cache local"""
+    try:
+        tmdb_ids = request.get("tmdb_ids", [])
+        language_code = request.get("language_code", "es")
+        
+        if not tmdb_ids:
+            return []
+        
+        # Buscar traducciones
+        translations = db.query(models.ContentTranslation).filter(
+            models.ContentTranslation.tmdb_id.in_(tmdb_ids),
+            models.ContentTranslation.language_code == language_code
+        ).all()
+        
+        results = []
+        found_ids = set()
+        
+        for translation in translations:
+            results.append({
+                "tmdb_id": translation.tmdb_id,
+                "language_code": language_code,
+                "poster_url": translation.poster_url,
+                "backdrop_url": translation.backdrop_url,
+                "title": translation.title,
+                "synopsis": translation.synopsis,
+                "tagline": translation.tagline,
+                "cached": True
+            })
+            found_ids.add(translation.tmdb_id)
+        
+        # Para IDs no encontrados, buscar en media
+        missing_ids = set(tmdb_ids) - found_ids
+        if missing_ids:
+            medias = db.query(models.Media).filter(
+                models.Media.tmdb_id.in_(missing_ids)
+            ).all()
+            
+            for media in medias:
+                results.append({
+                    "tmdb_id": media.tmdb_id,
+                    "language_code": language_code,
+                    "poster_url": media.imagen,
+                    "backdrop_url": None,
+                    "title": media.titulo,
+                    "synopsis": media.sinopsis,
+                    "tagline": None,
+                    "cached": True
+                })
+        
+        return results
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error obteniendo lote: {str(e)}")
+
+@app.post("/content-cache")
+async def save_content_cache(content_data: dict, db: Session = Depends(database.get_db)):
+    """Guarda contenido en cache (fire-and-forget)"""
+    try:
+        tmdb_id = content_data.get("tmdb_id")
+        media_type = content_data.get("media_type")
+        language_code = content_data.get("language_code")
+        
+        if not all([tmdb_id, media_type, language_code]):
+            return {"status": "error", "message": "Datos incompletos"}
+        
+        # Buscar o crear traducción
+        translation = db.query(models.ContentTranslation).filter(
+            models.ContentTranslation.tmdb_id == tmdb_id,
+            models.ContentTranslation.language_code == language_code
+        ).first()
+        
+        if not translation:
+            # Buscar media base para obtener información
+            media = db.query(models.Media).filter(
+                models.Media.tmdb_id == tmdb_id
+            ).first()
+            
+            if not media:
+                return {"status": "error", "message": "Media no encontrada"}
+            
+            # Crear nueva traducción
+            translation = models.ContentTranslation(
+                tmdb_id=tmdb_id,
+                media_type=media_type,
+                language_code=language_code,
+                title=content_data.get("title"),
+                synopsis=content_data.get("synopsis"),
+                poster_url=content_data.get("poster_url"),
+                backdrop_url=content_data.get("backdrop_url"),
+                tagline=content_data.get("tagline")
+            )
+            db.add(translation)
+        else:
+            # Actualizar campos solo si están vacíos
+            if not translation.poster_url and content_data.get("poster_url"):
+                translation.poster_url = content_data.get("poster_url")
+            if not translation.backdrop_url and content_data.get("backdrop_url"):
+                translation.backdrop_url = content_data.get("backdrop_url")
+            if not translation.title and content_data.get("title"):
+                translation.title = content_data.get("title")
+            if not translation.synopsis and content_data.get("synopsis"):
+                translation.synopsis = content_data.get("synopsis")
+            if not translation.tagline and content_data.get("tagline"):
+                translation.tagline = content_data.get("tagline")
+        
+        db.commit()
+        return {"status": "success", "message": "Cache actualizado"}
+        
+    except Exception as e:
+        db.rollback()
+        return {"status": "error", "message": f"Error guardando cache: {str(e)}"}
+
+# --- Endpoint mejorado de TMDb con soporte de idioma ---
+
 @app.get("/tmdb/{media_type}/{tmdb_id}")
-async def get_tmdb_data(media_type: str, tmdb_id: int):
-    """Proxy endpoint para obtener datos de TMDB con backdrop"""
+async def get_tmdb_data(
+    media_type: str, 
+    tmdb_id: int, 
+    language: str = Query(default="es-ES", description="Código de idioma para TMDb")
+):
+    """Proxy endpoint para obtener datos de TMDB con soporte de idioma"""
     try:
         headers = get_tmdb_auth_headers()
         
         # Construir URL y parámetros
         url = f"{TMDB_BASE_URL}/{media_type}/{tmdb_id}"
-        params = {}
+        params = {"language": language}
         
         # Si no hay Bearer token, usar API key si está disponible
         if not headers:
@@ -2018,6 +2519,150 @@ async def get_tmdb_data(media_type: str, tmdb_id: int):
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Error al conectar con TMDB: {str(e)}")
 
+# --- ENDPOINTS DE ACTUALIZACIÓN AUTOMÁTICA ---
+
+@app.post("/admin/auto-update/run")
+def run_auto_update(
+    limit: int = Query(10, description="Máximo número de medias a actualizar"),
+    media_type: str = Query(None, description="Filtrar por tipo (película/serie)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(current_user_required)
+):
+    """Ejecuta la actualización automática manualmente"""
+    update_service = get_auto_update_service()
+    results = update_service.update_medias_batch(db, limit=limit, media_type=media_type)
+    return {
+        "message": "Actualización automática ejecutada",
+        "results": results
+    }
+
+@app.get("/admin/auto-update/stats")
+def get_auto_update_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(current_user_required)
+):
+    """Obtiene estadísticas del sistema de actualización automática"""
+    update_service = get_auto_update_service()
+    stats = update_service.get_update_stats(db)
+    return stats
+
+@app.get("/admin/auto-update/stats/detailed")
+def get_auto_update_detailed_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(current_user_required)
+):
+    """Obtiene estadísticas detalladas del sistema de auto-actualización"""
+    try:
+        update_service = get_auto_update_service()
+        stats = update_service.get_update_stats(db)
+        
+        # Información adicional sobre la próxima ejecución
+        next_update_info = {
+            "recommended_frequency": "Cada 24-48 horas para contenido activo",
+            "optimization_notes": [
+                "Series finalizadas se actualizan cada 4-6 meses",
+                "Películas estrenadas se actualizan cada 4 meses", 
+                "Contenido activo se actualiza cada 3-7 días",
+                "Se priorizan cambios de reparto para contenido finalizado"
+            ]
+        }
+        
+        return {
+            **stats,
+            "next_update_info": next_update_info
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener estadísticas detalladas: {str(e)}")
+
+@app.post("/admin/auto-update/mark/{tmdb_id}")
+def mark_media_for_update(
+    tmdb_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(current_user_required)
+):
+    """Marca un media específico para actualización forzada"""
+    update_service = get_auto_update_service()
+    update_service.mark_media_for_update(db, tmdb_id)
+    return {"message": f"Media con TMDb ID {tmdb_id} marcado para actualización"}
+
+@app.patch("/medias/{media_id}/auto-update")
+def toggle_auto_update(
+    media_id: int,
+    enabled: bool = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(current_user_required)
+):
+    """Habilita/deshabilita la actualización automática para un media específico"""
+    media = crud.get_media(db, media_id, usuario_id=current_user.id)
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    
+    # Obtener el media base (no el UsuarioMedia)
+    base_media = db.query(models.Media).filter(models.Media.id == media_id).first()
+    if not base_media:
+        raise HTTPException(status_code=404, detail="Base media not found")
+    
+    base_media.auto_update_enabled = enabled
+    db.commit()
+    
+    return {
+        "message": f"Actualización automática {'habilitada' if enabled else 'deshabilitada'} para {media.titulo}",
+        "auto_update_enabled": enabled
+    }
+
+@app.get("/medias/outdated")
+def get_outdated_medias(
+    limit: int = Query(20, description="Máximo número de medias a devolver"),
+    media_type: str = Query(None, description="Filtrar por tipo (película/serie)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(current_user_required)
+):
+    """Obtiene la lista de medias que necesitan actualización"""
+    update_service = get_auto_update_service()
+    
+    # Construir query base
+    query = db.query(models.Media).filter(
+        models.Media.tmdb_id.isnot(None),
+        models.Media.auto_update_enabled == True
+    )
+    
+    # Filtrar por tipo si se especifica
+    if media_type:
+        query = query.filter(models.Media.tipo == media_type)
+    
+    # Obtener medias que necesitan actualización
+    outdated_medias = []
+    
+    for media in query.all():
+        if update_service.should_update_media(media):
+            # Calcular días desde última actualización
+            days_since_update = None
+            if media.last_updated_tmdb:
+                days_since_update = (datetime.now() - media.last_updated_tmdb).days
+            
+            outdated_medias.append({
+                "id": media.id,
+                "titulo": media.titulo,
+                "tipo": media.tipo,
+                "tmdb_id": media.tmdb_id,
+                "status": media.status,
+                "temporadas": media.temporadas,
+                "episodios": media.episodios,
+                "last_updated_tmdb": media.last_updated_tmdb,
+                "days_since_update": days_since_update,
+                "needs_update": media.needs_update,
+                "auto_update_enabled": media.auto_update_enabled
+            })
+            
+            if len(outdated_medias) >= limit:
+                break
+    
+    return {
+        "total": len(outdated_medias),
+        "medias": outdated_medias
+    }
+
+# --- Al final del archivo: servir frontend React para rutas no API ---
 @app.get("/", include_in_schema=False)
 @app.get("/{full_path:path}", include_in_schema=False)
 def serve_react_app(full_path: str = ""):

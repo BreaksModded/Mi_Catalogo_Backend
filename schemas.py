@@ -4,6 +4,38 @@ from datetime import datetime, date
 from fastapi_users import schemas as fa_schemas
 import json
 
+class TranslationSummary(BaseModel):
+    total: int
+    languages: List[str]
+    with_synopsis: int
+    
+    class Config:
+        from_attributes = True
+
+class ContentTranslationBase(BaseModel):
+    media_id: int
+    language_code: str
+    title: Optional[str] = None
+    synopsis: Optional[str] = None
+    tmdb_id: Optional[int] = None
+    media_type: Optional[str] = None
+    
+    # 🔧 NUEVOS CAMPOS DE CACHE - Información por idioma/región
+    poster_url: Optional[str] = None
+    backdrop_url: Optional[str] = None
+    tagline: Optional[str] = None
+    certification: Optional[str] = None
+    release_date: Optional[date] = None
+
+class ContentTranslationCreate(ContentTranslationBase):
+    pass
+
+class ContentTranslation(ContentTranslationBase):
+    id: int
+    
+    class Config:
+        from_attributes = True
+
 class TagBase(BaseModel):
     nombre: str
 
@@ -18,18 +50,33 @@ class Tag(TagBase):
 class MediaBase(BaseModel):
     tmdb_id: Optional[int] = None
     titulo: str
-    titulo_ingles: Optional[str] = None
+    original_title: Optional[str] = None
     anio: int
     genero: str
     sinopsis: str
     director: str
     elenco: str
     imagen: str
-    estado: str
+    # CAMPO ELIMINADO: estado (duplicado con status)
     tipo: str
     temporadas: Optional[int] = None
     episodios: Optional[int] = None
     nota_imdb: Optional[float] = None
+    
+    # 🔧 NUEVOS CAMPOS DE CACHE - Información universal
+    runtime: Optional[int] = None
+    production_countries: Optional[str] = None
+    status: Optional[str] = None  # Estado de producción TMDb: Released, Ended, In Production, etc.
+    certification: Optional[str] = None  # Certificación en español (referencia principal)
+    first_air_date: Optional[date] = None
+    last_air_date: Optional[date] = None
+    episode_runtime: Optional[str] = None
+    
+    # 🔄 CAMPOS DE CONTROL DE ACTUALIZACIONES AUTOMÁTICAS
+    last_updated_tmdb: Optional[datetime] = None
+    auto_update_enabled: Optional[bool] = True
+    needs_update: Optional[bool] = False
+    
     # Campos personales del usuario
     favorito: Optional[bool] = False
     pendiente: Optional[bool] = False
@@ -53,12 +100,12 @@ class MediaBase(BaseModel):
         return v
 
 class MediaCreate(MediaBase):
-    titulo_ingles: Optional[str] = None
+    original_title: Optional[str] = None
     tags: List[int] = []  # ids de tags
 
 class Media(MediaBase):
     id: int
-    titulo_ingles: Optional[str] = None
+    original_title: Optional[str] = None
     fecha_agregado: Optional[datetime] = None  # Cambiado de fecha_creacion a fecha_agregado
     tags: List[Tag] = []
     class Config:

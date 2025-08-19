@@ -8,6 +8,7 @@ import requests
 import sqlalchemy as sa
 from sqlalchemy.orm import joinedload
 from sqlalchemy.exc import IntegrityError
+from auto_translation_service import ensure_spanish_content, create_automatic_translations, get_translation_summary
 from sqlalchemy import or_
 from genre_utils import get_variants_for_input, normalize_text
 
@@ -376,6 +377,17 @@ def create_media(db: Session, media: schemas.MediaCreate, usuario_id: int):
                         )
                 db.commit()
             
+            # 🌐 Verificar y crear traducciones automáticas si faltan
+            if getattr(media, 'tmdb_id', None) and getattr(media, 'tipo', None):
+                print(f"🔍 Verificando traducciones para media existente: {existing_media.titulo}")
+                summary_before = get_translation_summary(db, existing_media.id)
+                
+                if summary_before['total'] < 4:  # Si no tiene las 4 traducciones
+                    print(f"📊 Traducciones actuales: {summary_before['total']}/4")
+                    create_automatic_translations(db, existing_media.id, media.tmdb_id, media.tipo)
+                    summary_after = get_translation_summary(db, existing_media.id)
+                    print(f"✅ Traducciones actualizadas: {summary_after['total']}/4")
+            
             # Retornar el media existente con los datos personales del usuario
             return get_media(db, existing_media.id, usuario_id)
     
@@ -392,6 +404,12 @@ def create_media(db: Session, media: schemas.MediaCreate, usuario_id: int):
     media_data = {k: v for k, v in media.dict().items() 
                   if k not in ['tags', 'nota_tmdb', 'nota_personal', 'anotacion_personal', 'favorito', 'pendiente', 'fecha_agregado']}
     media_data['nota_imdb'] = media.nota_imdb
+    
+    # 🌐 PASO 1: Asegurar que el contenido esté en español para la tabla media
+    if getattr(media, 'tmdb_id', None):
+        print(f"🔄 Asegurando contenido en español para TMDb ID: {media.tmdb_id}")
+        media_data = ensure_spanish_content(db, media_data)
+        print(f"✅ Datos en español preparados: {media_data.get('titulo', 'Sin título')}")
     
     db_media = models.Media(**media_data)
     # No asignar tags directamente - se manejará después en la tabla media_tag
@@ -468,6 +486,15 @@ def create_media(db: Session, media: schemas.MediaCreate, usuario_id: int):
                     {"media_id": db_media.id, "tag_id": tag.id, "usuario_id": usuario_id}
                 )
         db.commit()
+    
+    # 🌐 PASO 2: Crear traducciones automáticas para todos los idiomas disponibles
+    if getattr(media, 'tmdb_id', None) and getattr(media, 'tipo', None):
+        print(f"🌍 Creando traducciones automáticas para {db_media.titulo}...")
+        create_automatic_translations(db, db_media.id, media.tmdb_id, media.tipo)
+        
+        # Mostrar resumen de traducciones creadas
+        summary = get_translation_summary(db, db_media.id)
+        print(f"📊 Resumen traducciones: {summary['total']} idiomas, {summary['with_synopsis']} con sinopsis")
     
     # Cargar el media completo con datos personales para devolverlo
     return get_media(db, db_media.id, usuario_id)
@@ -718,14 +745,14 @@ def add_tag_to_media(db: Session, media_id: int, tag_id: int, usuario_id: int):
     
     # Verificar si la asociación ya existe
     existing = db.execute(
-        "SELECT 1 FROM media_tag WHERE media_id = :media_id AND tag_id = :tag_id AND usuario_id = :usuario_id",
+        text("SELECT 1 FROM media_tag WHERE media_id = :media_id AND tag_id = :tag_id AND usuario_id = :usuario_id"),
         {"media_id": media_id, "tag_id": tag_id, "usuario_id": usuario_id}
     ).fetchone()
     
     if not existing:
         # Insertar la asociación con usuario_id
         db.execute(
-            "INSERT INTO media_tag (media_id, tag_id, usuario_id) VALUES (:media_id, :tag_id, :usuario_id)",
+            text("INSERT INTO media_tag (media_id, tag_id, usuario_id) VALUES (:media_id, :tag_id, :usuario_id)"),
             {"media_id": media_id, "tag_id": tag_id, "usuario_id": usuario_id}
         )
         db.commit()
@@ -748,7 +775,7 @@ def remove_tag_from_media(db: Session, media_id: int, tag_id: int, usuario_id: i
     
     # Eliminar la asociación específica del usuario
     db.execute(
-        "DELETE FROM media_tag WHERE media_id = :media_id AND tag_id = :tag_id AND usuario_id = :usuario_id",
+        text("DELETE FROM media_tag WHERE media_id = :media_id AND tag_id = :tag_id AND usuario_id = :usuario_id"),
         {"media_id": media_id, "tag_id": tag_id, "usuario_id": usuario_id}
     )
     db.commit()

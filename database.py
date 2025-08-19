@@ -93,8 +93,8 @@ def optimize_search_indexes():
                 ON media USING gin (titulo gin_trgm_ops)
             """))
             conn.execute(text("""
-                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_titulo_ingles_trgm 
-                ON media USING gin (titulo_ingles gin_trgm_ops)
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_original_title_trgm 
+                ON media USING gin (original_title gin_trgm_ops)
             """))
             conn.execute(text("""
                 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_media_elenco_trgm 

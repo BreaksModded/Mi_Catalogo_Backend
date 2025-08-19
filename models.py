@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Table, ForeignKey, DateTime, func
+from sqlalchemy import Column, Integer, String, Float, Boolean, Table, ForeignKey, DateTime, Date, func
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import unicodedata
@@ -67,12 +67,26 @@ class Media(Base):
     director = Column(String)
     elenco = Column(String)
     imagen = Column(String)
-    estado = Column(String)  # vista, no vista, favorita, etc.
+    # CAMPO ELIMINADO: estado (duplicado con status)
     tipo = Column(String)    # pelicula o serie
     temporadas = Column(Integer, nullable=True)
     episodios = Column(Integer, nullable=True)
     nota_imdb = Column(Float, nullable=True)
-    titulo_ingles = Column(String, nullable=True)
+    original_title = Column(String, nullable=True)
+    
+    # 🔧 NUEVOS CAMPOS DE CACHE - Información universal
+    runtime = Column(Integer, nullable=True)  # Duración en minutos
+    production_countries = Column(String, nullable=True)  # Países de producción
+    status = Column(String, nullable=True)  # Estado de producción TMDb: Released, Ended, In Production, etc.
+    certification = Column(String, nullable=True)  # Certificación en español (referencia principal)
+    first_air_date = Column(Date, nullable=True)  # Para series: fecha primer episodio
+    last_air_date = Column(Date, nullable=True)  # Para series: fecha último episodio
+    episode_runtime = Column(String, nullable=True)  # Para series: duración promedio episodios
+    
+    # 🔄 CAMPOS DE CONTROL DE ACTUALIZACIONES AUTOMÁTICAS
+    last_updated_tmdb = Column(DateTime, nullable=True)  # Última actualización desde TMDb
+    auto_update_enabled = Column(Boolean, default=True)  # Si permite actualizaciones automáticas
+    needs_update = Column(Boolean, default=False)  # Flag para marcar que necesita actualización
     
     # Relaciones
     # usuario = relationship("User", foreign_keys=[usuario_id])  # Comentamos para evitar import circular
@@ -112,22 +126,22 @@ class ContentTranslation(Base):
     id = Column(Integer, primary_key=True, index=True)
     media_id = Column(Integer, ForeignKey('media.id'), nullable=False)
     language_code = Column(String(5), nullable=False)
-    translated_title = Column(String(500))
-    translated_synopsis = Column(String)
-    director = Column(String(300))
-    cast_members = Column(String)
-    genres = Column(String(300))
-    poster_url = Column(String(500))  # URL del poster en este idioma
-    translation_source = Column(String(20), default='tmdb')
+    title = Column(String(500))   # Título traducido
+    synopsis = Column(String)     # Sinopsis traducida
     tmdb_id = Column(Integer)
     media_type = Column(String(10))
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # 🔧 NUEVOS CAMPOS DE CACHE - Información por idioma/región
+    poster_url = Column(String(500), nullable=True)    # Poster con texto localizado
+    backdrop_url = Column(String(500), nullable=True)  # Backdrop con texto localizado
+    tagline = Column(String, nullable=True)            # Frase promocional traducida
+    certification = Column(String(10), nullable=True)  # Clasificación local (PG-13, 12+, etc.)
+    release_date = Column(Date, nullable=True)         # Fecha de estreno local
     
     # Relación con Media
     media = relationship('Media', backref='translations')
     
-    # Constraint para evitar duplicados
+    # Constraint para evitar duplicados (se añade en la migración)
     __table_args__ = (
         {'extend_existing': True}
     )

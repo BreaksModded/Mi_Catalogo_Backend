@@ -1,4 +1,6 @@
 import os
+import unicodedata
+import re
 from fastapi_users import BaseUserManager, IntegerIDMixin
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,12 +8,31 @@ from sqlalchemy import func, or_, select
 from users import User
 from database import get_async_db
 from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
-from fastapi_users.exceptions import UserNotExists, InvalidPasswordException
+from fastapi_users.exceptions import UserNotExists, InvalidPasswordException, UserAlreadyExists
 from typing import Optional
 from email_service import get_email_service
 
 # Carga el secreto desde variable de entorno (obligatorio)
 SECRET = os.getenv("SECRET")
+
+def normalize_string(text: str) -> str:
+    """
+    Normaliza un string removiendo tildes, acentos y convirtiendo a minúsculas
+    """
+    if not text:
+        return ""
+    
+    # Convertir a minúsculas
+    text = text.lower()
+    
+    # Remover tildes y acentos usando unicodedata
+    text = unicodedata.normalize('NFD', text)
+    text = ''.join(char for char in text if unicodedata.category(char) != 'Mn')
+    
+    # Remover espacios extra y caracteres especiales (opcional)
+    text = re.sub(r'[^\w]', '', text)
+    
+    return text
 
 class CustomSQLAlchemyUserDatabase(SQLAlchemyUserDatabase):
     async def get_by_email_or_username(self, email_or_username: str) -> Optional[User]:
@@ -24,10 +45,53 @@ class CustomSQLAlchemyUserDatabase(SQLAlchemyUserDatabase):
         )
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+    
+    async def check_username_exists(self, username: str) -> bool:
+        """
+        Verifica si existe un username similar (ignorando mayúsculas y tildes)
+        """
+        normalized_username = normalize_string(username)
+        
+        # Buscar todos los usuarios y comparar sus usernames normalizados
+        statement = select(User)
+        result = await self.session.execute(statement)
+        users = result.scalars().all()
+        
+        for user in users:
+            if normalize_string(user.username) == normalized_username:
+                return True
+        return False
+    
+    async def check_email_exists(self, email: str) -> bool:
+        """
+        Verifica si existe un email similar (ignorando mayúsculas)
+        """
+        statement = select(User).where(func.lower(User.email) == func.lower(email))
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none() is not None
 
 class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
     reset_password_token_secret = SECRET
     verification_token_secret = SECRET
+
+    async def create(self, user_create, safe: bool = False, request=None):
+        """
+        Sobrescribe el método create para agregar validación de duplicados
+        """
+        # Validar que el email no exista (ignorando mayúsculas)
+        if hasattr(self.user_db, 'check_email_exists'):
+            email_exists = await self.user_db.check_email_exists(user_create.email)
+            if email_exists:
+                raise UserAlreadyExists()
+        
+        # Validar que el username no exista (ignorando mayúsculas y tildes)
+        if hasattr(self.user_db, 'check_username_exists') and hasattr(user_create, 'username'):
+            username_exists = await self.user_db.check_username_exists(user_create.username)
+            if username_exists:
+                raise UserAlreadyExists("Username already exists")
+        
+        # Si pasa las validaciones, crear el usuario normalmente
+        return await super().create(user_create, safe, request)
 
     async def on_after_forgot_password(self, user: User, token: str, request=None):
         """Maneja el evento después de solicitar recuperación de contraseña"""

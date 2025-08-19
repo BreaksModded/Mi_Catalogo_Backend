@@ -82,12 +82,8 @@ class TranslationService:
             
             # Extract relevant fields
             translation_data = {
-                "translated_title": data.get("title") or data.get("name"),
-                "translated_synopsis": data.get("overview"),
-                "director": self._extract_director(data, endpoint),
-                "cast_members": self._extract_cast(data, endpoint),
-                "genres": self._extract_genres(data),
-                "translation_source": "tmdb",
+                "title": data.get("title") or data.get("name"),
+                "synopsis": data.get("overview"),
                 "tmdb_id": tmdb_id,
                 "media_type": endpoint
             }
@@ -165,12 +161,12 @@ class TranslationService:
     def _translation_to_dict(self, translation: ContentTranslation) -> dict:
         """Convert translation model to dictionary"""
         return {
-            "titulo": translation.translated_title,
-            "sinopsis": translation.translated_synopsis,
-            "director": translation.director,
-            "elenco": translation.cast_members,
-            "genero": translation.genres,
-            "translationSource": translation.translation_source,
+            "titulo": translation.title,
+            "sinopsis": translation.synopsis,
+            "director": None,  # This info is now in the main Media table
+            "elenco": None,    # This info is now in the main Media table
+            "genero": None,    # This info is now in the main Media table
+            "translationSource": "cache",
             "titulo_original": None  # Will be set by the caller if needed
         }
     
