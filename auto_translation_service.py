@@ -156,9 +156,6 @@ def create_automatic_translations(db, media_id, tmdb_id, media_type):
     tmdb_media_type = convert_media_type_to_tmdb(media_type)
     translations_created = 0
     
-    print(f"🌐 Creando traducciones automáticas para media_id={media_id}, tmdb_id={tmdb_id}")
-    print(f"   📝 Idiomas objetivo: {', '.join(TARGET_LANGUAGES.keys())} (español ya está en tabla media)")
-    
     for lang_code, lang_name in TARGET_LANGUAGES.items():
         try:
             # Verificar si ya existe esta traducción
@@ -196,22 +193,16 @@ def create_automatic_translations(db, media_id, tmdb_id, media_type):
                 })
                 
                 translations_created += 1
-                print(f"   ✅ Traducción {lang_name} ({lang_code}) creada con datos completos")
-                print(f"      📅 Release date: {translation_data.get('release_date', 'N/A')}")
-                print(f"      🖼️  Poster: {'✅' if translation_data.get('poster_url') else '❌'}")
-                print(f"      🎬 Backdrop: {'✅' if translation_data.get('backdrop_url') else '❌'}")
-                print(f"      💬 Tagline: {'✅' if translation_data.get('tagline') else '❌'}")
             else:
-                print(f"   ⚠️  No se pudo obtener traducción para {lang_name} ({lang_code})")
+                pass
                 
         except Exception as e:
-            print(f"   ❌ Error creando traducción {lang_code}: {str(e)}")
+            pass
     
     if translations_created > 0:
         db.commit()
-        print(f"🎉 Traducciones automáticas completadas: {translations_created} creadas")
     else:
-        print("⚠️  No se crearon traducciones automáticas")
+        pass
 
 def get_translation_summary(db, media_id):
     """Obtiene un resumen de las traducciones disponibles para un media"""

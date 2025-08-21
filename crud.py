@@ -407,9 +407,7 @@ def create_media(db: Session, media: schemas.MediaCreate, usuario_id: int):
     
     # 🌐 PASO 1: Asegurar que el contenido esté en español para la tabla media
     if getattr(media, 'tmdb_id', None):
-        print(f"🔄 Asegurando contenido en español para TMDb ID: {media.tmdb_id}")
         media_data = ensure_spanish_content(db, media_data)
-        print(f"✅ Datos en español preparados: {media_data.get('titulo', 'Sin título')}")
     
     db_media = models.Media(**media_data)
     # No asignar tags directamente - se manejará después en la tabla media_tag
@@ -489,12 +487,10 @@ def create_media(db: Session, media: schemas.MediaCreate, usuario_id: int):
     
     # 🌐 PASO 2: Crear traducciones automáticas para todos los idiomas disponibles
     if getattr(media, 'tmdb_id', None) and getattr(media, 'tipo', None):
-        print(f"🌍 Creando traducciones automáticas para {db_media.titulo}...")
         create_automatic_translations(db, db_media.id, media.tmdb_id, media.tipo)
         
         # Mostrar resumen de traducciones creadas
         summary = get_translation_summary(db, db_media.id)
-        print(f"📊 Resumen traducciones: {summary['total']} idiomas, {summary['with_synopsis']} con sinopsis")
     
     # Cargar el media completo con datos personales para devolverlo
     return get_media(db, db_media.id, usuario_id)
