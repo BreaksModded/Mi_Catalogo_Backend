@@ -37,7 +37,7 @@ from users import User
 from user_manager import get_user_manager, SECRET, UserManager
 from user_manager import get_user_db
 
-from schemas import UserRead, UserCreate
+from schemas import UserRead, UserCreate, UserUpdate
 import genre_routes
 
 app = FastAPI()
@@ -2307,7 +2307,7 @@ app.include_router(
     tags=["auth"],
 )
 app.include_router(
-    fastapi_users.get_users_router(UserRead, UserRead),
+    fastapi_users.get_users_router(UserRead, UserUpdate),
     prefix="/users",
     tags=["users"],
 )

@@ -153,9 +153,20 @@ class UserRead(fa_schemas.BaseUser[int]):
     def parse_plataformas_streaming(cls, v):
         if isinstance(v, str) and v:
             try:
-                return json.loads(v)
+                parsed = json.loads(v)
+                # Si es una lista de objetos, extraer solo los nombres de las plataformas
+                if isinstance(parsed, list) and parsed:
+                    if isinstance(parsed[0], dict):
+                        return [item.get('provider_name', str(item)) for item in parsed]
+                    return parsed
+                return parsed
             except:
                 return []
+        if isinstance(v, list):
+            # Si ya es una lista, verificar si son objetos y extraer nombres
+            if v and isinstance(v[0], dict):
+                return [item.get('provider_name', str(item)) for item in v]
+            return v
         return v or []
 
 class UserCreate(fa_schemas.BaseUserCreate):

@@ -23,8 +23,8 @@ class User(SQLAlchemyBaseUserTable[int], Base):
     idioma_preferido: Mapped[str] = mapped_column(String(length=10), default='es', nullable=False)
     
     # Preferencias de entretenimiento
-    generos_favoritos: Mapped[Optional[str]] = mapped_column(String(length=500), nullable=True)  # JSON string
-    plataformas_streaming: Mapped[Optional[str]] = mapped_column(String(length=500), nullable=True)  # JSON string
+    generos_favoritos: Mapped[Optional[str]] = mapped_column(String(length=1000), nullable=True)  # JSON string
+    plataformas_streaming: Mapped[Optional[str]] = mapped_column(String(length=2000), nullable=True)  # JSON string - Aumentado para plataformas
     tipo_contenido_preferido: Mapped[Optional[str]] = mapped_column(String(length=50), nullable=True)  # películas, series, ambos
     
     # Configuración de privacidad
